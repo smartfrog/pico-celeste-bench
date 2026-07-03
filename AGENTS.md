@@ -30,10 +30,12 @@ cartridge text file.
      `syntax error` / `runtime error` line means a clean boot.
    - `-x` checks boot/syntax/runtime only — it does NOT validate gameplay or level
      solvability. Those must be correct by construction.
-5. (Recommended) Play-test gameplay on a temp copy with scripted inputs — see
-   "Gameplay Self-Test" in the prompt: override `btn`/`btnp` in Lua, drive them
-   frame-by-frame from a `script()` function, `printh` the state, and
-   `extcmd("shutdown")` to end the run; read the printh lines in the captured output.
+5. (Recommended) Play-test gameplay with the `pico8` MCP tools — see "Gameplay
+   Self-Test" in the prompt: `pico8_boot` the cart, drive it frame-by-frame with
+   `pico8_step`/`pico8_play`, verify state with `pico8_read`, and screenshot with
+   `pico8_screen`. The MCP runs a temp copy; the graded file is never modified.
+   (MCP server: https://github.com/smartfrog/pico8-mcp — fallback: the scripted
+   `btn`/`btnp` harness on a /tmp copy, described in the prompt.)
 
 ## Cartridge file format (strict — harness reads the file, not chat)
 

@@ -99,6 +99,24 @@ A clean boot prints `RUNNING:` with no `syntax error` or `runtime error` line. T
 
 Important: `pico8 -x` only checks boot, syntax, and startup runtime errors. It does not prove that the game is fun, beatable, or mechanically correct.
 
+## Interactive Play-Testing (MCP)
+
+Gameplay itself is play-tested with [pico8-mcp](https://github.com/smartfrog/pico8-mcp), an MCP server that runs a cart under deterministic, frame-by-frame lockstep control: the agent can hold buttons, advance N frames, read Lua globals (player position, deaths, win flag), and take pixel-perfect screenshots.
+
+It copies the cart to a temp directory and injects its control harness there, so the graded `.p8` file is never modified. Example opencode configuration:
+
+```json
+{
+  "mcp": {
+    "pico8": {
+      "type": "local",
+      "command": ["node", "/path/to/pico8-mcp/dist/index.js"],
+      "enabled": true
+    }
+  }
+}
+```
+
 ## Creating A New Result
 
 Save generated cartridges in `carts/` while iterating:

@@ -43,7 +43,7 @@ After the research step, work in concrete, bounded iterations using your tools. 
 
 1. Draft: write the design-notes header, choose constants, design the level, implement a complete first version, and save it to the file you were asked to create.
 2. Run and fix: test the cartridge headless with `pico8 -x <yourfile>.p8 2>&1` (the `pico8` binary is in your PATH) and fix every `syntax error` or `runtime error` it prints. It reports only launch errors, not gameplay.
-3. Play-test (recommended): exercise the gameplay logic headlessly with the scripted-input harness described in "Gameplay Self-Test" below, on a throwaway copy of your cart.
+3. Play-test (recommended): drive the game frame by frame with the `pico8` MCP tools as described in "Gameplay Self-Test" below.
 4. Improve: make focused improvements (movement feel, level readability, visuals), saving and re-running each time to confirm it still boots.
 5. Stop when the Final Check below passes, and leave the final file in place.
 
@@ -64,7 +64,7 @@ No Markdown, no code fences, no prose inside the file. The cartridge must be sel
 
 Two more file rules:
 
-- all testing happens on temp copies (e.g. in /tmp): the graded file must never contain harness or debug code
+- the graded file must never contain harness or debug code; the MCP tools test a temp copy automatically, and any manual harness experiment must happen on a copy in /tmp
 - if you include a `__gfx__` section, each line is exactly 128 hex chars; a partial section (only the first 8 or 16 lines) is fine
 
 # Controls
@@ -181,32 +181,19 @@ The game must include:
 
 # Gameplay Self-Test (recommended)
 
-`pico8 -x` cannot press buttons: it only proves the cart boots. A scripted-input harness lets you also exercise the gameplay logic itself, headlessly. This step is recommended, not required; it is the most reliable way to catch dead mechanics (a dash that does not move, spikes that do not kill, a goal that never triggers).
+`pico8 -x` cannot press buttons: it only proves the cart boots. The `pico8` MCP tools let you play the cart interactively, frame by frame, in deterministic lockstep. This step is recommended, not required; it is the most reliable way to catch dead mechanics (a dash that does not move, spikes that do not kill, a goal that never triggers).
 
-Work on a throwaway copy of your cart (e.g. `/tmp/test_play.p8`); never leave harness code in the deliverable.
+The MCP copies your cart to /tmp and injects its control harness into the copy; your file is never modified, so you can point it at the deliverable directly. It requires a standard cart structure (`_update`/`_update60`, inputs read via `btn`/`btnp`).
 
-How it works: PICO-8 runs Lua, so defining global `btn`/`btnp` functions in the cart shadows the built-ins; your game code then reads inputs your script controls. Paste near the top of the TEMP COPY:
+Workflow:
 
-    _tb={} _tp={}
-    function btn(i) return _tb[i]==true end
-    function btnp(i) return _tp[i]==true end
-    function script()
-     _tp={}                                   -- btnp lasts one frame
-     if fr==5   then p.x=65 p.y=88 end        -- teleport to isolate a scenario
-     if fr==10  then _tb={[1]=true} end       -- hold right from now on
-     if fr==12  then _tp={[4]=true} end       -- press jump
-     if fr==21  then _tp={[5]=true} end       -- press dash near the jump apex
-     if fr==200 then
-      printh("x="..p.x.." y="..p.y.." win="..(win and 1 or 0))
-      extcmd("shutdown")
-     end
-    end
+- `pico8_boot` with the path to your cart: starts a session with game time frozen; pass a `seed` for deterministic `rnd()`
+- `pico8_step` / `pico8_play`: hold buttons (`"o"` = btn(4) jump, `"x"` = btn(5) dash) and advance N frames; buttons stay held between steps, and `btnp` fires only on the first frame of a new press, so release with `buttons: []` before pressing the same button again
+- `pico8_read`: read Lua globals by dotted path (e.g. `p.x`, `deaths`, `win`) to check state precisely instead of eyeballing pixels
+- `pico8_screen`: pixel-perfect screenshot of the 128x128 screen, useful to compare the look against `assets/screenshot.png`
+- `pico8_reset`: restart the session after editing the cart (it re-reads the file from disk); `pico8_shutdown` when done
 
-Adapt the variable names to your cart (player table, frame counter, flags), call `script()` at the top of your update function, and use your frame counter (`fr` above) to time the presses. `printh` writes to the console under `-x`; `extcmd("shutdown")` ends the run before the timeout, so a short timeout is fine. Read the printh lines in the captured output, not the exit code:
-
-    timeout 20 pico8 -x /tmp/test_play.p8 2>&1
-
-Compare the printed numbers to the values you expect from your level grid; do not eyeball. Worthwhile scenarios:
+Compare the values you read to the ones you expect from your level grid; do not eyeball. Worthwhile scenarios:
 
 - walk into a spike: death, then respawn at the start with the dash restored
 - jump+dash across the forced obstacle: lands on the far side (assert x and y)
@@ -214,7 +201,7 @@ Compare the printed numbers to the values you expect from your level grid; do no
 - touch a strawberry: the score increments
 - reach the goal: the win flag is set and the position stays frozen afterwards
 
-Optional visual check: in another temp copy, call `extcmd("screen")` at some frame and `extcmd("shutdown")` a few frames later, run `pico8 -home /tmp/p8home -desktop /tmp -x /tmp/test_shot.p8`, then open the saved png and compare it with `assets/screenshot.png`. If your visuals depend on rnd, call `srand(1)` in `_init` to make shots reproducible.
+If the MCP tools are not available, fall back to a scripted-input harness on a temp copy: shadow `btn`/`btnp` with globals driven from a `script()` function called in `_update`, `printh` the state, `extcmd("shutdown")` to end the run, and read the printh lines from `timeout 20 pico8 -x /tmp/test_play.p8 2>&1`.
 
 # Build Loop and Final Check
 
