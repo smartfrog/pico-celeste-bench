@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "pico8": {
+      "type": "local",
+      "command": ["node", "/home/fred/projects/pico8-mcp/dist/index.js"],
+      "enabled": true
+    }
+  }
+}
