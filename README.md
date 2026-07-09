@@ -133,6 +133,68 @@ prompts/celeste_like.md
 
 The final output should be a self-contained `.p8` file. Do not leave test harness code or debug-only changes in the final cartridge.
 
+## Automated Benchmark Harness
+
+The harness in `bench/` drives opencode headless to generate one cartridge per
+model and collects quantitative metrics for each run. It does not score gameplay
+quality (that stays manual); it measures the cost of producing the cartridge.
+
+Configure the models in `bench/models.json`:
+
+```json
+{
+  "repetitions": 1,
+  "timeout_seconds": 1200,
+  "agent": "build",
+  "prompt_file": "prompts/celeste_like.md",
+  "models": [
+    { "model": "voban/minimax-m3", "variant": "thinking", "out": "minimaxm3" },
+    { "model": "voban/glm-5.2", "variant": "max", "out": "glm52" },
+    { "model": "openai/gpt-5.5", "out": "gpt55" }
+  ]
+}
+```
+
+- `model`: `provider/model` passed to `opencode run --model`.
+- `variant` (optional): reasoning effort passed to `--variant` (e.g. `high`, `max`,
+  `thinking`). Check available variants with `opencode models <provider> --verbose`.
+- `out`: stable output name. Produces `results/<out>.p8` (final cartridge) and
+  `results/<out>.metrics.json` (per-model metrics). It also serves as the display id.
+- `label` (optional): prettier display text; defaults to `out`.
+
+Run it:
+
+```sh
+python bench/run_bench.py                 # uses bench/models.json
+python bench/run_bench.py --config path   # custom config
+python bench/run_bench.py --dry-run       # print planned runs, do nothing
+```
+
+For each model the harness invokes `opencode run --format json`, captures the
+session id from the stream, then reads `opencode export <sessionID>` (the reliable
+source of truth) to extract metrics. Raw artifacts (`.stream.jsonl`, `.export.json`)
+are written under `results/runs/<timestamp>/` (gitignored). The final cartridge and
+its metrics land in `results/` (committable), plus aggregated `results/metrics.csv`
+and `results/metrics.md`.
+
+Metrics collected per run:
+
+| Metric | Meaning |
+| --- | --- |
+| `tokens_input` / `tokens_output` / `tokens_reasoning` | token usage from the session export |
+| `cache_read` / `cache_write` | prompt-cache token usage |
+| `tokens_total` | input + output + reasoning |
+| `cost` | reported session cost in USD |
+| `wall_seconds` | wall-clock time measured by the harness |
+| `session_seconds` | `time.updated - time.created` from the export |
+| `assistant_messages` | number of assistant turns (iterations) |
+| `tool_calls_total` / `tool_calls_by_name` | tool invocations, total and per tool |
+| `booted_clean` | factual `pico8 -x` clean-boot check (not a gameplay score) |
+| `cartridge_written` | whether the target `.p8` file exists after the run |
+
+Note: `pico8 -x` only proves the cart boots; it does not validate gameplay. Quality
+ranking (the table above) remains a manual judgement.
+
 ## Evaluation Notes
 
 The strongest cartridges tend to satisfy three things at once:

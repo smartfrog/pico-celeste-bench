@@ -15,7 +15,15 @@ cartridge text file.
 - `assets/sprites.png`, `assets/screenshot.png` — reference visuals the cartridge must
   resemble. Open and inspect them before drawing sprites.
 - `results/*.p8` — example/produced cartridges (e.g. `qwen37.p8`), kept as reference.
+- `results/*.metrics.json` — per-model run metrics produced by the harness (same base
+  name as the cartridge, e.g. `glm52.metrics.json` next to `glm52.p8`).
 - `carts/` — gitignored output directory for generated cartridges.
+- `bench/` — automated metrics harness. `bench/models.json` lists the models to run;
+  `bench/run_bench.py` drives `opencode run --format json` (one run per model), reads
+  `opencode export <sessionID>` for token/cost/time/tool metrics, and writes
+  `results/<out>.p8` + `results/<out>.metrics.json` plus aggregated `results/metrics.csv`
+  and `results/metrics.md`. Raw run artifacts go under `results/runs/<ts>/` (gitignored).
+  It measures cost of production only — it does not score gameplay quality.
 
 ## The task workflow (when asked to build the cartridge)
 
