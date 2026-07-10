@@ -61,7 +61,55 @@ def build_prompt(prompt_file_rel, cart_rel):
     )
 
 
-def run_opencode(model, variant, agent, prompt, timeout_s, stream_path):
+def format_live_event(evt):
+    """Return a compact, human-readable line for an opencode JSON event."""
+    event_type = evt.get("type")
+    part = evt.get("part", {}) or {}
+
+    if event_type == "text":
+        text = (part.get("text") or "").strip()
+        return f"[model] {text}" if text else None
+
+    if event_type == "tool_use":
+        tool = part.get("tool", "?")
+        state = part.get("state", {}) or {}
+        tool_input = state.get("input", {}) or {}
+        detail = None
+        for key in ("filePath", "path", "url", "cart_path", "command", "description"):
+            value = tool_input.get(key)
+            if value:
+                detail = str(value).replace("\n", " ")
+                break
+        if tool == "apply_patch" and not detail:
+            patch = tool_input.get("patchText", "")
+            match = re.search(r"\*\*\* (?:Add|Update|Delete) File: ([^\n]+)", patch)
+            if match:
+                detail = match.group(1)
+        if detail and len(detail) > 180:
+            detail = detail[:177] + "..."
+        return f"[tool] {tool}{' ' + detail if detail else ''}"
+
+    if event_type == "error":
+        err = evt.get("error", {}) or {}
+        data = err.get("data", {}) if isinstance(err, dict) else {}
+        message = data.get("message") or err.get("name") or "unknown error"
+        return f"[error] {message}"
+
+    return None
+
+
+def print_live_event(evt):
+    """Print an event while keeping multiline model messages readable."""
+    rendered = format_live_event(evt)
+    if not rendered:
+        return
+    lines = rendered.splitlines()
+    print(lines[0], flush=True)
+    for line in lines[1:]:
+        print(f"        {line}", flush=True)
+
+
+def run_opencode(model, variant, agent, prompt, timeout_s, stream_path, show_live=True):
     """Launch `opencode run --format json` and stream stdout to a file.
 
     Returns (session_id, error_message, wall_seconds, timed_out, returncode).
@@ -96,6 +144,8 @@ def run_opencode(model, variant, agent, prompt, timeout_s, stream_path):
                     evt = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if show_live:
+                    print_live_event(evt)
                 if session_id is None and evt.get("sessionID"):
                     session_id = evt["sessionID"]
                 if evt.get("type") == "error" and error_message is None:
@@ -121,23 +171,30 @@ def run_opencode(model, variant, agent, prompt, timeout_s, stream_path):
 def export_session(session_id, export_path):
     """Run `opencode export <id>` (JSON on stdout) and save it. Returns dict or None."""
     try:
-        result = subprocess.run(
-            ["opencode", "export", session_id],
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=120,
-        )
+        # Bun can truncate large stdout writes when they are captured through a
+        # pipe. A regular file descriptor lets opencode flush the full export.
+        with open(export_path, "w") as export_file:
+            result = subprocess.run(
+                ["opencode", "export", session_id],
+                cwd=str(REPO_ROOT),
+                stdout=export_file,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
     except subprocess.TimeoutExpired:
+        print(f"warning: session export timed out: {session_id}", file=sys.stderr)
         return None
-    raw = result.stdout
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        print(f"warning: session export failed: {detail or result.returncode}", file=sys.stderr)
+        return None
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+        with open(export_path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"warning: invalid session export for {session_id}: {exc}", file=sys.stderr)
         return None
-    with open(export_path, "w") as f:
-        json.dump(data, f, indent=2)
     return data
 
 
@@ -177,6 +234,62 @@ def extract_metrics(export_data):
         "cache_write": c_write,
         "tokens_total": t_in + t_out + t_reason,
         "cost": info.get("cost", 0) or 0,
+        "session_seconds": session_seconds,
+        "assistant_messages": assistant_messages,
+        "tool_calls_total": sum(tool_calls.values()),
+        "tool_calls_by_name": dict(tool_calls),
+    }
+
+
+def extract_stream_metrics(stream_path):
+    """Recover metrics from an opencode JSONL stream when export is unavailable."""
+    totals = collections.Counter()
+    tool_calls = collections.Counter()
+    assistant_messages = 0
+    cost = 0
+    first_timestamp = None
+    last_timestamp = None
+
+    with open(stream_path) as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            timestamp = event.get("timestamp")
+            if isinstance(timestamp, (int, float)):
+                if first_timestamp is None:
+                    first_timestamp = timestamp
+                last_timestamp = timestamp
+
+            event_type = event.get("type")
+            part = event.get("part", {}) or {}
+            if event_type == "tool_use":
+                tool_calls[part.get("tool", "?")] += 1
+            elif event_type == "step_finish":
+                assistant_messages += 1
+                tokens = part.get("tokens", {}) or {}
+                cache = tokens.get("cache", {}) or {}
+                totals["input"] += tokens.get("input", 0) or 0
+                totals["output"] += tokens.get("output", 0) or 0
+                totals["reasoning"] += tokens.get("reasoning", 0) or 0
+                totals["cache_read"] += cache.get("read", 0) or 0
+                totals["cache_write"] += cache.get("write", 0) or 0
+                cost += part.get("cost", 0) or 0
+
+    session_seconds = None
+    if first_timestamp is not None and last_timestamp is not None:
+        session_seconds = round((last_timestamp - first_timestamp) / 1000, 2)
+
+    return {
+        "tokens_input": totals["input"],
+        "tokens_output": totals["output"],
+        "tokens_reasoning": totals["reasoning"],
+        "cache_read": totals["cache_read"],
+        "cache_write": totals["cache_write"],
+        "tokens_total": totals["input"] + totals["output"] + totals["reasoning"],
+        "cost": cost,
         "session_seconds": session_seconds,
         "assistant_messages": assistant_messages,
         "tool_calls_total": sum(tool_calls.values()),
@@ -268,6 +381,7 @@ def main():
     parser = argparse.ArgumentParser(description="PICO-Celeste Bench harness")
     parser.add_argument("--config", default=str(REPO_ROOT / "bench" / "models.json"))
     parser.add_argument("--dry-run", action="store_true", help="print planned runs, do nothing")
+    parser.add_argument("--quiet", action="store_true", help="hide live model and tool activity")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -322,7 +436,7 @@ def main():
 
         session_id, error_message, wall_seconds, timed_out, returncode = run_opencode(
             p["model"], p["variant"], cfg["agent"], prompt,
-            cfg["timeout_seconds"], stream_path,
+            cfg["timeout_seconds"], stream_path, show_live=not args.quiet,
         )
         print(f"    session={session_id} wall={wall_seconds}s "
               f"{'TIMEOUT ' if timed_out else ''}{'error='+error_message if error_message else 'ok'}")
@@ -349,6 +463,9 @@ def main():
             export_data = export_session(session_id, export_path)
             if export_data:
                 row.update(extract_metrics(export_data))
+            else:
+                print("    using JSONL stream fallback for metrics")
+                row.update(extract_stream_metrics(stream_path))
 
         with open(metrics_path, "w") as f:
             json.dump(row, f, indent=2)

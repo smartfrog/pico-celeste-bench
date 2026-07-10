@@ -168,14 +168,19 @@ Run it:
 python bench/run_bench.py                 # uses bench/models.json
 python bench/run_bench.py --config path   # custom config
 python bench/run_bench.py --dry-run       # print planned runs, do nothing
+python bench/run_bench.py --quiet         # hide live model/tool activity
 ```
 
 For each model the harness invokes `opencode run --format json`, captures the
-session id from the stream, then reads `opencode export <sessionID>` (the reliable
-source of truth) to extract metrics. Raw artifacts (`.stream.jsonl`, `.export.json`)
-are written under `results/runs/<timestamp>/` (gitignored). The final cartridge and
-its metrics land in `results/` (committable), plus aggregated `results/metrics.csv`
-and `results/metrics.md`.
+session id from the stream, and displays the model messages and tool calls live.
+Pass `--quiet` to suppress that live activity. It then reads
+`opencode export <sessionID>` (the reliable source of truth) to extract metrics.
+If that export fails or is invalid, the same metrics are recovered from the raw
+JSONL event stream instead.
+Raw artifacts (`.stream.jsonl`, `.export.json`) are written under
+`results/runs/<timestamp>/` (gitignored). The final cartridge and its metrics land
+in `results/` (committable), plus aggregated `results/metrics.csv` and
+`results/metrics.md`.
 
 Metrics collected per run:
 
