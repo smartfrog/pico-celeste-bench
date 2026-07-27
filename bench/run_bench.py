@@ -20,11 +20,19 @@ import collections
 import csv
 import datetime
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+try:
+    from bench.opencode_api import run_session
+except ModuleNotFoundError:
+    from opencode_api import run_session
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,7 +46,11 @@ def load_config(config_path):
     with open(config_path) as f:
         cfg = json.load(f)
     cfg.setdefault("repetitions", 1)
+    cfg.setdefault("max_attempts", 3)
     cfg.setdefault("timeout_seconds", 1200)
+    cfg.setdefault("idle_timeout_seconds", 600)
+    cfg.setdefault("demo_timeout_seconds", 100)
+    cfg.setdefault("max_output_tokens", 32000)
     cfg.setdefault("agent", "build")
     cfg.setdefault("prompt_file", "prompts/celeste_like.md")
     if not cfg.get("models"):
@@ -46,7 +58,7 @@ def load_config(config_path):
     return cfg
 
 
-def build_prompt(prompt_file_rel, cart_rel):
+def build_prompt(prompt_file_rel, cart_rel, cart_name, gif_name):
     """Reproduce the operator's usual invocation.
 
     The model reads the prompt file itself via its Read tool (faithful to the
@@ -56,6 +68,9 @@ def build_prompt(prompt_file_rel, cart_rel):
     return (
         f"Suis le prompt ici : {prompt_file_rel}. "
         f"Mets ton resultat dans {cart_rel} . "
+        f"Le nom exact de la cartouche est {json.dumps(cart_name)} et doit etre "
+        f"affiche dans le jeu. Le nom exact du GIF a passer a "
+        f"extcmd(\"set_filename\", ...) est {json.dumps(gif_name)} . "
         f"Il est strictement interdit de consulter les realisations des autres "
         f"modeles dans ./results ."
     )
@@ -69,6 +84,10 @@ def format_live_event(evt):
     if event_type == "text":
         text = (part.get("text") or "").strip()
         return f"[model] {text}" if text else None
+
+    if event_type == "reasoning":
+        text = (part.get("text") or "").strip()
+        return f"[thinking] {text}" if text else None
 
     if event_type == "tool_use":
         tool = part.get("tool", "?")
@@ -109,63 +128,118 @@ def print_live_event(evt):
         print(f"        {line}", flush=True)
 
 
-def run_opencode(model, variant, agent, prompt, timeout_s, stream_path, show_live=True):
-    """Launch `opencode run --format json` and stream stdout to a file.
+def build_resume_prompt(error_message, cart_exists, booted_clean, demo_gif_written):
+    """Build a targeted resume message based on the failure mode."""
+    if not cart_exists:
+        return (
+            "Continue depuis ton etat actuel. N'effectue pas la recherche a nouveau. "
+            "Aucune cartouche valide n'a ete produite. Ecris le fichier .p8 demande "
+            "maintenant, verifie le boot avec pico8 -x, puis termine."
+        )
+    if not booted_clean:
+        return (
+            "Continue depuis ton etat actuel. La cartouche ne demarre pas proprement. "
+            "Lance pico8 -x, corrige les erreurs de syntaxe/runtime, puis termine."
+        )
+    if not demo_gif_written:
+        return (
+            "Continue depuis ton etat actuel. La cartouche demarre mais l'autoplay "
+            "n'a pas cree le GIF. Corrige uniquement la demo pour qu'elle atteigne "
+            "vraiment CLEAR! et sauvegarde le GIF, puis termine."
+        )
+    return (
+        "Continue depuis ton etat actuel. N'effectue pas la recherche a nouveau. "
+        "Termine la tache demandee maintenant."
+    )
+
+
+def is_resumable(error_message):
+    """Check whether an error is worth retrying (not auth/billing/provider death)."""
+    if not error_message:
+        return False
+    lower = error_message.lower()
+    if any(k in lower for k in ("credit", "402", "401", "auth", "api key", "forbidden")):
+        return False
+    return True
+
+
+def task_incomplete_reason(cart_exists, booted_clean, demo_gif_written):
+    """Describe the first missing artifact required for a successful run."""
+    if not cart_exists:
+        return "no cartridge written"
+    if not booted_clean:
+        return "cartridge does not boot cleanly"
+    if not demo_gif_written:
+        return "demo GIF not written"
+    return None
+
+
+def write_json_atomic(path, data):
+    """Write JSON without exposing a partially-written state file."""
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(temp_path, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(temp_path, path)
+
+
+def load_metrics(path):
+    """Load persisted run metrics, including an in-progress checkpoint."""
+    try:
+        with open(path) as f:
+            state = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"warning: invalid metrics {path}: {exc}", file=sys.stderr)
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def metrics_complete(metrics):
+    return bool(
+        metrics
+        and metrics.get("cartridge_written")
+        and metrics.get("booted_clean")
+        and metrics.get("demo_gif_written")
+    )
+
+
+def iso_now():
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def run_opencode(
+    model, variant, agent, prompt, timeout_s, stream_path,
+    max_output_tokens=32000, show_live=True, session_id=None,
+    heartbeat_seconds=30, event_callback=None, idle_timeout_s=600,
+):
+    """Run OpenCode through an isolated HTTP server and native SSE stream.
 
     Returns (session_id, error_message, wall_seconds, timed_out, returncode).
     """
-    cmd = ["opencode", "run", "--format", "json", "--model", model, "--agent", agent]
-    if variant:
-        cmd += ["--variant", variant]
-    cmd.append(prompt)
-
-    session_id = None
-    error_message = None
-    timed_out = False
-    start = time.monotonic()
-
-    with open(stream_path, "w") as stream_file:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
-        try:
-            for line in proc.stdout:
-                stream_file.write(line)
-                stream_file.flush()
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    evt = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if show_live:
-                    print_live_event(evt)
-                if session_id is None and evt.get("sessionID"):
-                    session_id = evt["sessionID"]
-                if evt.get("type") == "error" and error_message is None:
-                    err = evt.get("error", {})
-                    data = err.get("data", {}) if isinstance(err, dict) else {}
-                    error_message = data.get("message") or err.get("name") or "unknown error"
-                if timeout_s and (time.monotonic() - start) > timeout_s:
-                    timed_out = True
-                    proc.kill()
-                    break
-            returncode = proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.kill()
-            returncode = proc.wait()
-
-    wall_seconds = round(time.monotonic() - start, 2)
-    if timed_out and error_message is None:
-        error_message = f"timeout after {timeout_s}s"
-    return session_id, error_message, wall_seconds, timed_out, returncode
+    result = run_session(
+        directory=REPO_ROOT,
+        model=model,
+        variant=variant,
+        agent=agent,
+        prompt=prompt,
+        timeout_s=timeout_s,
+        idle_timeout_s=idle_timeout_s,
+        stream_path=stream_path,
+        max_output_tokens=max_output_tokens,
+        show_live=show_live,
+        session_id=session_id,
+        heartbeat_seconds=heartbeat_seconds,
+        event_callback=event_callback,
+    )
+    return (
+        result.session_id,
+        result.error,
+        result.wall_seconds,
+        result.timed_out,
+        result.returncode,
+    )
 
 
 def export_session(session_id, export_path):
@@ -249,6 +323,7 @@ def extract_stream_metrics(stream_path):
     cost = 0
     first_timestamp = None
     last_timestamp = None
+    seen_tools = set()
 
     with open(stream_path) as f:
         for line in f:
@@ -265,6 +340,19 @@ def extract_stream_metrics(stream_path):
 
             event_type = event.get("type")
             part = event.get("part", {}) or {}
+            if event_type == "message.part.updated":
+                part = (event.get("properties") or {}).get("part") or {}
+                if part.get("type") == "tool":
+                    state = part.get("state") or {}
+                    part_id = part.get("id")
+                    if (
+                        part_id not in seen_tools
+                        and state.get("status") in ("completed", "error")
+                    ):
+                        seen_tools.add(part_id)
+                        tool_calls[part.get("tool", "?")] += 1
+                if part.get("type") == "step-finish":
+                    event_type = "step_finish"
             if event_type == "tool_use":
                 tool_calls[part.get("tool", "?")] += 1
             elif event_type == "step_finish":
@@ -297,29 +385,95 @@ def extract_stream_metrics(stream_path):
     }
 
 
+def extract_stream_metrics_many(stream_paths):
+    """Combine fallback metrics from every attempt in a resumed session."""
+    combined = collections.Counter()
+    tool_calls = collections.Counter()
+    for stream_path in stream_paths:
+        metrics = extract_stream_metrics(stream_path)
+        for field in (
+            "tokens_input", "tokens_output", "tokens_reasoning",
+            "cache_read", "cache_write", "tokens_total", "cost",
+            "session_seconds", "assistant_messages", "tool_calls_total",
+        ):
+            combined[field] += metrics.get(field) or 0
+        tool_calls.update(metrics.get("tool_calls_by_name") or {})
+    return {
+        **combined,
+        "tool_calls_by_name": dict(tool_calls),
+    }
+
+
 def check_boot(cart_path):
     """Factual clean-boot check via `pico8 -x`. Returns True/False/None."""
     if not cart_path.exists():
         return None
-    try:
-        result = subprocess.run(
-            ["timeout", "10", "pico8", "-x", str(cart_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=20,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
+    with tempfile.TemporaryDirectory(prefix="pico-celeste-boot-") as home:
+        try:
+            result = subprocess.run(
+                ["timeout", "10", "pico8", "-x", str(cart_path), "-home", home],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=20,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
     out = result.stdout or ""
     if "syntax error" in out or "runtime error" in out:
         return False
     return "RUNNING:" in out
 
 
+def capture_demo(cart_path, gif_path, timeout_s=100):
+    """Run the final cart's autoplay and accept only a freshly written GIF."""
+    if not cart_path.exists():
+        return False
+    gif_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="pico-celeste-demo-") as home:
+        recorded_gif = Path(home) / "carts" / gif_path.name
+        try:
+            proc = subprocess.Popen(
+                [
+                    "pico8", "-x", str(cart_path),
+                    "-home", home, "-gif_len", "120", "-gif_scale", "4",
+                ],
+                cwd=str(gif_path.parent),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            print(f"warning: demo capture failed to start: {exc}", file=sys.stderr)
+            return False
+
+        deadline = time.monotonic() + timeout_s
+        try:
+            while time.monotonic() < deadline:
+                if recorded_gif.is_file() and recorded_gif.stat().st_size > 0:
+                    # EXTCMD("video") writes synchronously; allow filesystem
+                    # metadata to settle before copying and stopping the cart.
+                    time.sleep(0.5)
+                    shutil.copy2(recorded_gif, gif_path)
+                    return gif_path.stat().st_size > 0
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+    return False
+
+
 CSV_FIELDS = [
     "timestamp", "out", "model", "variant", "rep", "session_id",
-    "cartridge_written", "booted_clean",
+    "cartridge_written", "booted_clean", "demo_gif_written",
+    "last_progress_at", "last_progress_type", "last_heartbeat_at",
+    "last_action_at", "last_action_type", "idle_timeout_seconds",
     "tokens_input", "tokens_output", "tokens_reasoning",
     "cache_read", "cache_write", "tokens_total",
     "cost", "wall_seconds", "session_seconds",
@@ -341,9 +495,9 @@ def write_csv(rows, csv_path):
 
 def write_markdown(rows, md_path):
     header = (
-        "| Result | Model | Variant | Boot | Total tok | In | Out | Reason | "
+        "| Result | Model | Variant | Boot | Demo GIF | Total tok | In | Out | Reason | "
         "Cache R | Cost $ | Wall s | Iters | Tools | Error |\n"
-        "| --- | --- | --- | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n"
+        "| --- | --- | --- | :---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n"
     )
     lines = [header]
     ranked = sorted(
@@ -352,14 +506,16 @@ def write_markdown(rows, md_path):
     )
     for r in ranked:
         boot = {True: "ok", False: "FAIL", None: "?"}[r.get("booted_clean")]
+        demo = "ok" if r.get("demo_gif_written") else "FAIL"
         err = (r.get("error") or "").replace("|", "/")[:40]
         lines.append(
-            "| {out} | {model} | {variant} | {boot} | {tot} | {tin} | {tout} | "
+            "| {out} | {model} | {variant} | {boot} | {demo} | {tot} | {tin} | {tout} | "
             "{tr} | {cr} | {cost} | {wall} | {it} | {tools} | {err} |\n".format(
                 out=r.get("out", ""),
                 model=r.get("model", ""),
                 variant=r.get("variant") or "-",
                 boot=boot,
+                demo=demo,
                 tot=r.get("tokens_total", ""),
                 tin=r.get("tokens_input", ""),
                 tout=r.get("tokens_output", ""),
@@ -407,6 +563,8 @@ def main():
             base = out if reps == 1 else f"{out}-r{rep}"
             plan.append({
                 "model": model, "variant": variant, "label": label,
+                "cart_name": m.get("cart_name", label),
+                "max_output_tokens": m.get("max_output_tokens", cfg["max_output_tokens"]),
                 "rep": rep, "out": out, "base": base,
             })
 
@@ -414,7 +572,9 @@ def main():
     print(f"Planned {len(plan)} run(s); carts+metrics -> results/, raw artifacts -> {run_dir}")
     for p in plan:
         v = f" (variant={p['variant']})" if p["variant"] else ""
-        print(f"  - {p['out']}{v} rep {p['rep']} -> results/{p['base']}.p8")
+        target = f"results/{p['base']}.p8"
+        existing = " [skip existing]" if (results_dir / f"{p['base']}.p8").exists() else ""
+        print(f"  - {p['out']}{v} rep {p['rep']} -> {target}{existing}")
     if args.dry_run:
         return 0
 
@@ -427,19 +587,224 @@ def main():
         cart_rel = f"results/{base}.p8"
         cart_path = results_dir / f"{base}.p8"
         metrics_path = results_dir / f"{base}.metrics.json"
+        gif_path = results_dir / f"{base}.gif"
         # raw artifacts stay under results/runs/<ts>/ (gitignored)
         stream_path = run_dir / f"{base}.stream.jsonl"
         export_path = run_dir / f"{base}.export.json"
 
         print(f"\n[{idx}/{len(plan)}] {p['label']} rep {p['rep']} ({p['model']})")
-        prompt = build_prompt(prompt_file_rel, cart_rel)
+        saved_metrics = load_metrics(metrics_path)
+        resume_session_id = None
+        start_new_session = False
+        attempt = 1
+        if saved_metrics and not metrics_complete(saved_metrics) and saved_metrics.get("session_id"):
+            print(f"    Incomplete session found: {saved_metrics['session_id']}")
+            print(f"    status={saved_metrics.get('status', 'unknown')} "
+                  f"last_event={saved_metrics.get('last_event_at', 'unknown')}")
+            if not sys.stdin.isatty():
+                print("    SKIP incomplete run (confirmation requires a TTY)")
+                continue
+            try:
+                choice = input("    [r]esume / [n]ew session / [s]kip: ").strip().lower()
+            except EOFError:
+                choice = "s"
+            if choice == "r":
+                resume_session_id = saved_metrics["session_id"]
+                attempt = int(saved_metrics.get("attempt") or 1) + 1
+                stream_path = run_dir / f"{base}.attempt-{attempt}.stream.jsonl"
+            elif choice == "n":
+                metrics_path.unlink(missing_ok=True)
+                saved_metrics = None
+                start_new_session = True
+            else:
+                print("    SKIP incomplete session")
+                continue
 
-        session_id, error_message, wall_seconds, timed_out, returncode = run_opencode(
-            p["model"], p["variant"], cfg["agent"], prompt,
-            cfg["timeout_seconds"], stream_path, show_live=not args.quiet,
+        if cart_path.exists() and not resume_session_id and not start_new_session:
+            print(f"    SKIP existing: {cart_rel}")
+            try:
+                with open(metrics_path) as f:
+                    rows.append(json.load(f))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"warning: existing metrics unavailable for {base}: {exc}", file=sys.stderr)
+            continue
+
+        if not resume_session_id:
+            # Only artifacts created by this run may count toward its result.
+            for artifact_path in (cart_path, gif_path, metrics_path):
+                artifact_path.unlink(missing_ok=True)
+        prompt = (
+            build_resume_prompt(
+                None,
+                cart_path.exists(),
+                bool((saved_metrics or {}).get("booted_clean")),
+                gif_path.exists(),
+            )
+            if resume_session_id else
+            build_prompt(prompt_file_rel, cart_rel, p["cart_name"], f"{base}.gif")
         )
-        print(f"    session={session_id} wall={wall_seconds}s "
-              f"{'TIMEOUT ' if timed_out else ''}{'error='+error_message if error_message else 'ok'}")
+
+        stream_paths = []
+        if resume_session_id:
+            stream_paths.extend((saved_metrics or {}).get("stream_paths") or [])
+            saved_stream = (saved_metrics or {}).get("stream_path")
+            if saved_stream and saved_stream not in stream_paths:
+                stream_paths.append(saved_stream)
+        current_stream = str(stream_path.relative_to(REPO_ROOT))
+        stream_paths.append(current_stream)
+        prior_wall_seconds = (
+            float((saved_metrics or {}).get("wall_seconds") or 0)
+            if resume_session_id else 0
+        )
+
+        run_metrics = {
+            "timestamp": ts,
+            "out": p["out"],
+            "model": p["model"],
+            "variant": p["variant"],
+            "rep": p["rep"],
+            "status": "starting",
+            "session_id": resume_session_id,
+            "attempt": attempt,
+            "stream_path": current_stream,
+            "stream_paths": stream_paths,
+            "started_at": (saved_metrics or {}).get("started_at") or iso_now(),
+            "last_event_at": (saved_metrics or {}).get("last_event_at"),
+            "last_event_type": (saved_metrics or {}).get("last_event_type"),
+            "last_progress_at": (saved_metrics or {}).get("last_progress_at"),
+            "last_progress_type": (saved_metrics or {}).get("last_progress_type"),
+            "last_heartbeat_at": (saved_metrics or {}).get("last_heartbeat_at"),
+            "last_action_at": iso_now(),
+            "last_action_type": "prompt",
+            "idle_timeout_seconds": cfg["idle_timeout_seconds"],
+            "cartridge_written": cart_path.exists(),
+            "booted_clean": False,
+            "demo_gif_written": False,
+            "wall_seconds": (saved_metrics or {}).get("wall_seconds"),
+            "error": None,
+        }
+        write_json_atomic(metrics_path, run_metrics)
+
+        def persist_event(active_session_id, event, outcome):
+            run_metrics["status"] = "running"
+            if active_session_id:
+                run_metrics["session_id"] = active_session_id
+            run_metrics["last_event_at"] = iso_now()
+            run_metrics["last_event_type"] = event.get("type") or "unknown"
+            if outcome.progress:
+                run_metrics["last_progress_at"] = run_metrics["last_event_at"]
+                run_metrics["last_progress_type"] = run_metrics["last_event_type"]
+            if outcome.heartbeat:
+                run_metrics["last_heartbeat_at"] = run_metrics["last_event_at"]
+            if outcome.action:
+                part = (event.get("properties") or {}).get("part") or {}
+                run_metrics["last_action_at"] = run_metrics["last_event_at"]
+                run_metrics["last_action_type"] = part.get("tool") or run_metrics["last_event_type"]
+            write_json_atomic(metrics_path, run_metrics)
+
+        session_id, error_message, attempt_wall, timed_out, returncode = run_opencode(
+            p["model"], p["variant"], cfg["agent"], prompt,
+            cfg["timeout_seconds"], stream_path,
+            max_output_tokens=p["max_output_tokens"], show_live=not args.quiet,
+            session_id=resume_session_id, event_callback=persist_event,
+            idle_timeout_s=cfg["idle_timeout_seconds"],
+        )
+        run_metrics["session_id"] = session_id
+        run_metrics["status"] = "evaluating"
+        run_metrics["provider_error"] = error_message
+        wall_seconds = prior_wall_seconds + attempt_wall
+        run_metrics["wall_seconds"] = wall_seconds
+        write_json_atomic(metrics_path, run_metrics)
+        provider_status = (
+            "timeout" if timed_out else
+            f"error: {error_message}" if error_message else
+            "ok"
+        )
+        print(f"    session={session_id} wall={attempt_wall}s provider={provider_status}")
+
+        booted_clean = check_boot(cart_path)
+        demo_gif_written = (
+            capture_demo(cart_path, gif_path, cfg["demo_timeout_seconds"])
+            if booted_clean else False
+        )
+        print(f"    boot={'ok' if booted_clean else 'FAIL'} "
+              f"demo_gif={'ok' if demo_gif_written else 'FAIL'}")
+        incomplete_reason = task_incomplete_reason(
+            cart_path.exists(), booted_clean, demo_gif_written,
+        )
+        print(f"    task={'INCOMPLETE: ' + incomplete_reason if incomplete_reason else 'COMPLETE'}")
+        if incomplete_reason and not error_message:
+            error_message = incomplete_reason
+
+        # Interactive resume on failure (TTY only).
+        while (
+            sys.stdin.isatty()
+            and session_id
+            and not (cart_path.exists() and booted_clean and demo_gif_written)
+            and is_resumable(error_message)
+            and attempt < cfg["max_attempts"]
+        ):
+            print(f"\n    TASK INCOMPLETE: {error_message}")
+            print(f"    cartridge={'written' if cart_path.exists() else 'missing'} "
+                  f"boot={'ok' if booted_clean else 'FAIL'} "
+                  f"gif={'ok' if demo_gif_written else 'missing'}")
+            print(f"    session={session_id}")
+            try:
+                choice = input("    Resume? [r]esume / [s]kip / [a]bort: ").strip().lower()
+            except EOFError:
+                break
+            if choice == "a":
+                print("    Aborting benchmark.")
+                break
+            if choice != "r":
+                break
+
+            attempt += 1
+            attempt_stream = run_dir / f"{base}.attempt-{attempt}.stream.jsonl"
+            resume_prompt = build_resume_prompt(
+                error_message, cart_path.exists(), booted_clean, demo_gif_written,
+            )
+            print(f"    Resuming session {session_id} (attempt {attempt})...")
+            run_metrics.update({
+                "status": "starting",
+                "attempt": attempt,
+                "stream_path": str(attempt_stream.relative_to(REPO_ROOT)),
+                "provider_error": None,
+                "last_action_at": iso_now(),
+                "last_action_type": "prompt",
+            })
+            run_metrics["stream_paths"].append(run_metrics["stream_path"])
+            write_json_atomic(metrics_path, run_metrics)
+            _, error_message, resume_wall, _, _ = run_opencode(
+                p["model"], p["variant"], cfg["agent"], resume_prompt,
+                cfg["timeout_seconds"], attempt_stream,
+                max_output_tokens=p["max_output_tokens"], show_live=not args.quiet,
+                session_id=session_id, event_callback=persist_event,
+                idle_timeout_s=cfg["idle_timeout_seconds"],
+            )
+            wall_seconds += resume_wall
+            run_metrics["status"] = "evaluating"
+            run_metrics["provider_error"] = error_message
+            run_metrics["wall_seconds"] = wall_seconds
+            write_json_atomic(metrics_path, run_metrics)
+            resume_provider_status = f"error: {error_message}" if error_message else "ok"
+            print(f"    resume wall={resume_wall}s provider={resume_provider_status}")
+
+            booted_clean = check_boot(cart_path)
+            demo_gif_written = (
+                capture_demo(cart_path, gif_path, cfg["demo_timeout_seconds"])
+                if booted_clean else False
+            )
+            print(f"    boot={'ok' if booted_clean else 'FAIL'} "
+                  f"demo_gif={'ok' if demo_gif_written else 'FAIL'}")
+            incomplete_reason = task_incomplete_reason(
+                cart_path.exists(), booted_clean, demo_gif_written,
+            )
+            print(f"    task={'INCOMPLETE: ' + incomplete_reason if incomplete_reason else 'COMPLETE'}")
+            if incomplete_reason and not error_message:
+                error_message = incomplete_reason
+        if attempt >= cfg["max_attempts"]:
+            print("    Max resume attempts reached.")
 
         row = {
             "timestamp": ts,
@@ -449,9 +814,26 @@ def main():
             "rep": p["rep"],
             "session_id": session_id,
             "cartridge_written": cart_path.exists(),
-            "booted_clean": check_boot(cart_path),
+            "booted_clean": booted_clean,
+            "demo_gif_written": demo_gif_written,
             "wall_seconds": wall_seconds,
             "error": error_message,
+            "status": (
+                "complete" if cart_path.exists() and booted_clean and demo_gif_written
+                else "incomplete"
+            ),
+            "attempt": attempt,
+            "stream_path": run_metrics.get("stream_path"),
+            "stream_paths": run_metrics.get("stream_paths"),
+            "started_at": run_metrics.get("started_at"),
+            "last_event_at": run_metrics.get("last_event_at"),
+            "last_event_type": run_metrics.get("last_event_type"),
+            "last_progress_at": run_metrics.get("last_progress_at"),
+            "last_progress_type": run_metrics.get("last_progress_type"),
+            "last_heartbeat_at": run_metrics.get("last_heartbeat_at"),
+            "last_action_at": run_metrics.get("last_action_at"),
+            "last_action_type": run_metrics.get("last_action_type"),
+            "idle_timeout_seconds": cfg["idle_timeout_seconds"],
             "tokens_input": None, "tokens_output": None, "tokens_reasoning": None,
             "cache_read": None, "cache_write": None, "tokens_total": None,
             "cost": None, "session_seconds": None,
@@ -465,10 +847,13 @@ def main():
                 row.update(extract_metrics(export_data))
             else:
                 print("    using JSONL stream fallback for metrics")
-                row.update(extract_stream_metrics(stream_path))
+                attempt_streams = [
+                    REPO_ROOT / path for path in run_metrics["stream_paths"]
+                    if (REPO_ROOT / path).exists()
+                ]
+                row.update(extract_stream_metrics_many(attempt_streams))
 
-        with open(metrics_path, "w") as f:
-            json.dump(row, f, indent=2)
+        write_json_atomic(metrics_path, row)
         rows.append(row)
 
     write_csv(rows, REPO_ROOT / "results" / "metrics.csv")

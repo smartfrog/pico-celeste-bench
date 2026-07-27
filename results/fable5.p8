@@ -1,13 +1,23 @@
 pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
--- snowridge -- a celeste classic homage
--- emulates: readable 128x128 look, run/jump + 8-way normalized dash with
---  hitstop and white trail, ground-only dash recharge, hair dash indicator
---  (red=ready, blue=spent), spike death + instant respawn, berries, goal flag.
--- constants (30fps): maxrun 1, accel .6, grav .21, maxfall 2, jump -2, dash 5/4f.
--- forced dash: 4-tile spiked pit (32px) beats max run-jump (~19px); wide safe landing.
--- controls: btn(0/1)=move, btn(2)=aim up, btn(3)=aim down, btnp(4)=jump, btnp(5)=dash
+-- fable 5
+-- design notes:
+-- celeste classic homage: 30fps run/jump/8-dir dash, dash recharges
+-- only on ground, hair color shows dash state, snow, fast retries.
+-- constants: run 1, acc .6, dec .15, grav .21 (half at apex),
+-- jump -2, dash 5 (diag *.7071), 4f dash + 2f freeze.
+-- forced obstacle: 4-tile 32px air gap, jump+dash only.
+-- route: intro flat jump over spikes -> rising jump to spiked ledge ->
+-- up-left diag dash (reversal+vertical) -> optional left berry detour
+-- (demo takes it) -> climax right dash over big gap -> step-up to flag.
+--
+-- controls:
+-- btn(0)/btn(1) move left/right
+-- btn(2)/btn(3) aim dash up/down
+-- btnp(4) jump, btnp(5) dash
+
+name="fable 5"
 
 lvl={
 "................",
@@ -18,306 +28,366 @@ lvl={
 "................",
 "................",
 "................",
-"..........b.....",
-"w......b......fg",
-"#.....g......g##",
-"#....###....####",
-"#p.g^...#.......",
-"#########^^^^###",
+".....o..........",
+"...............f",
+"^ow...g......g^#",
+"###.####....###r",
+"...............r",
+"..g.......##...r",
+"####^^###...^^^r",
 "################",
-"################"}
+}
 
-maxrun=1 acc=0.6 dcc=0.2
-grav=0.21 maxfall=2 jumpv=2
-dspd=5 dtime0=4 freeze0=2
-
-function tat(x,y)
- if x<0 or x>15 or y>15 then return "#" end
- if y<0 then return "." end
- return sub(lvl[y+1],x+1,x+1)
+function tl(tx,ty)
+ if tx<0 or tx>15 then return "#" end
+ if ty<0 then return "." end
+ if ty>15 then return "#" end
+ return sub(lvl[ty+1],tx+1,tx+1)
 end
 
-function solid(x,y,w,h)
- for cx=flr(x/8),flr((x+w-1)/8) do
-  for cy=flr(y/8),flr((y+h-1)/8) do
-   if tat(cx,cy)=="#" then return true end
+function isol(c)
+ return c=="#" or c=="r" or c=="i"
+end
+
+function sol(x,y)
+ return isol(tl(flr(x/8),flr(y/8)))
+end
+
+-- player hitbox: x+1..x+6, y+2..y+7 (6x6)
+function bsol(x,y)
+ return sol(x+1,y+2) or sol(x+6,y+2)
+  or sol(x+1,y+7) or sol(x+6,y+7)
+end
+
+function pinit()
+ p={x=8,y=104,vx=0,vy=0,rx=0,ry=0,f=1,g=false,cd=true,
+    dt=0,fz=0,dvx=0,dvy=0,jb=0,cy=0}
+end
+
+function reset()
+ pinit()
+ berries={}
+ for ty=0,15 do
+  for tx=0,15 do
+   if tl(tx,ty)=="o" then
+    add(berries,{x=tx*8,y=ty*8,got=false})
+   end
   end
  end
- return false
+ score=0
+ win=false
+ winf=0
+ dead=0
+ trail={}
+ ds=1
 end
 
-function appr(v,t,a)
- return v>t and max(v-a,t) or min(v+a,t)
-end
-
-function sg(v)
- return v>0 and 1 or (v<0 and -1 or 0)
-end
-
-function boxhit(x,y,w,h,x2,y2,w2,h2)
- return x<x2+w2 and x+w>x2 and y<y2+h2 and y+h>y2
-end
-
-function reset_player()
- p={x=px0,y=py0,dx=0,dy=0,fac=1,
-  can_dash=true,dtime=0,ddx=0,ddy=0,
-  grace=0,jbuf=0,dead=0}
- hair={{x=px0,y=py0},{x=px0,y=py0}}
- freeze=0
+function respawn()
+ pinit()
+ if demo then ds=1 end
 end
 
 function _init()
- berries={} spikes={} parts={} snow={}
- got=0 win=false fr=0 deaths=0
- for y=0,15 do
-  for x=0,15 do
-   local c=tat(x,y)
-   if c=="p" then px0=x*8 py0=y*8 end
-   if c=="b" then add(berries,{x=x*8,y=y*8,got=false,t=rnd(1)}) end
-   if c=="f" then fx=x*8 fy=y*8 end
-   if c=="^" then add(spikes,{x=x*8,y=y*8}) end
-  end
+ fr=0
+ deaths=0
+ snow={}
+ for i=1,28 do
+  add(snow,{x=rnd(128),y=rnd(128),s=0.3+rnd(0.7)})
  end
- for i=1,25 do
-  add(snow,{x=rnd(128),y=rnd(128),s=0.5+rnd(1.5)})
+ demo=true
+ gifd=false
+ reset()
+ extcmd("set_filename","fable5.gif")
+ extcmd("rec_frames")
+end
+
+-- demo: deterministic input script (logical buttons only)
+function dstep()
+ local l,r,u,d,j,x=false,false,false,false,false,false
+ local g,px=p.g,p.x
+ if ds==1 then r=true if g and px>=24 then j=true ds=2 end
+ elseif ds==2 then r=true if g and px>=44 then ds=3 end
+ elseif ds==3 then r=true if g and px>=60 then j=true ds=4 end
+ elseif ds==4 then r=true if px>=76 then ds=5 end
+ elseif ds==5 then if g then ds=6 end
+ elseif ds==6 then l=true u=true x=true ds=7
+ elseif ds==7 then l=true u=true if g and p.dt<=0 and p.fz<=0 then ds=8 end
+ elseif ds==8 then l=true if g and px<=34 then j=true ds=9 end
+ elseif ds==9 then l=true if g and px<=12 then ds=10 end
+ elseif ds==10 then r=true if g and px>=15 then j=true ds=11 end
+ elseif ds==11 then r=true if g and px>=36 then ds=12 end
+ elseif ds==12 then r=true if g and px>=55 then j=true ds=13 end
+ elseif ds==13 then r=true if not g and px>=64 then x=true ds=14 end
+ elseif ds==14 then r=true if g and px>=90 then ds=15 end
+ elseif ds==15 then if g then ds=16 end
+ elseif ds==16 then r=true if g and px>=104 then j=true ds=17 end
+ elseif ds==17 then r=true
  end
- reset_player()
+ return l,r,u,d,j,x
+end
+
+k={} pk={}
+for i=0,5 do k[i]=false pk[i]=false end
+
+function getinp()
+ for i=0,5 do pk[i]=k[i] end
+ if demo then
+  local l,r,u,d,j,x=dstep()
+  k[0],k[1],k[2],k[3],k[4],k[5]=l,r,u,d,j,x
+ else
+  for i=0,5 do k[i]=btn(i) end
+ end
+end
+
+function prs(i)
+ return k[i] and not pk[i]
 end
 
 function kill()
- if p.dead>0 then return end
- p.dead=15
  deaths+=1
- for i=1,16 do
-  local a=rnd(1)
-  add(parts,{x=p.x+4,y=p.y+4,
-   dx=cos(a)*(1+rnd(2)),dy=sin(a)*(1+rnd(2)),
-   t=8+rnd(5),c=rnd(1)<0.5 and 7 or 8,r=1+rnd(1)})
- end
+ dead=10
+ dx0=p.x dy0=p.y
 end
 
-function movex(a)
- local d=sg(a) local n=abs(a)
- while n>0 do
-  local s=min(n,1) n-=s
-  if solid(p.x+d*s+1,p.y+2,6,6) then
-   p.dx=0 p.ddx=0 break
-  end
-  p.x+=d*s
- end
-end
-
-function movey(a)
- local d=sg(a) local n=abs(a)
- while n>0 do
-  local s=min(n,1) n-=s
-  if solid(p.x+1,p.y+d*s+2,6,6) then
-   if d>0 then p.y=flr(p.y) end
-   p.dy=0 p.ddy=0 break
-  end
-  p.y+=d*s
- end
-end
-
-function upd_player()
- local ong=solid(p.x+1,p.y+8,6,1)
- if ong then
-  p.grace=4
-  p.can_dash=true
- elseif p.grace>0 then
-  p.grace-=1
- end
- if p.jbuf>0 then p.jbuf-=1 end
- if btnp(4) then p.jbuf=4 end
-
- local ix=(btn(1) and 1 or 0)-(btn(0) and 1 or 0)
- if ix!=0 then p.fac=ix end
-
- -- dash start
- if btnp(5) and p.can_dash then
-  local dx=ix
-  local dy=(btn(3) and 1 or 0)-(btn(2) and 1 or 0)
-  if dx==0 and dy==0 then dx=p.fac end
-  local sp=dspd
-  if dx!=0 and dy!=0 then sp*=0.7071 end
-  p.ddx=dx*sp p.ddy=dy*sp
-  p.dx=p.ddx p.dy=p.ddy
-  p.dtime=dtime0
-  freeze=freeze0
-  p.can_dash=false
-  return
- end
-
- if p.dtime>0 then
-  -- dashing: no gravity, no run accel, fixed velocity + white trail
-  p.dtime-=1
-  p.dx=p.ddx p.dy=p.ddy
-  add(parts,{x=p.x+4,y=p.y+4,dx=0,dy=0,t=5,c=7,r=2.5})
-  if p.dtime==0 then
-   p.dx=sg(p.ddx)*2
-   p.dy=sg(p.ddy)*0.75
-  end
- else
-  -- run
-  if abs(p.dx)>maxrun then
-   p.dx=appr(p.dx,sg(p.dx)*maxrun,dcc)
-  else
-   p.dx=appr(p.dx,ix*maxrun,ong and acc or acc*0.8)
-  end
-  -- gravity w/ apex float
-  local g=grav
-  if abs(p.dy)<=0.15 then g*=0.5 end
-  if not ong then p.dy=appr(p.dy,maxfall,g) end
-  -- jump (buffered + coyote)
-  if p.jbuf>0 and p.grace>0 then
-   p.jbuf=0 p.grace=0
-   p.dy=-jumpv
-   for i=1,3 do
-    add(parts,{x=p.x+1+rnd(6),y=p.y+7,dx=rnd(0.8)-0.4,dy=-rnd(0.4),t=5,c=7,r=1})
+function hazards()
+ local x1,y1,x2,y2=p.x+1,p.y+2,p.x+6,p.y+7
+ for ty=max(0,flr(y1/8)),flr(y2/8) do
+  for tx=flr(x1/8),flr(x2/8) do
+   local c=tl(tx,ty)
+   if c=="^" and p.vy>=0 and y2>=ty*8+3 then
+    kill()
+    return
+   end
+   if c=="f" then
+    win=true
+    winf=0
    end
   end
  end
-
- movex(p.dx)
- movey(p.dy)
-
- if p.y<0 then p.y=0 if p.dy<0 then p.dy=0 end end
- if p.y>120 then kill() end
-
- -- spikes (up-spikes hurt while falling/standing)
- if p.dy>=0 then
-  for s in all(spikes) do
-   if boxhit(p.x+1,p.y+2,6,6,s.x,s.y+3,8,5) then kill() end
-  end
- end
-
- -- berries
  for b in all(berries) do
-  if not b.got and boxhit(p.x+1,p.y+2,6,6,b.x,b.y,8,8) then
-   b.got=true got+=1
-   add(parts,{x=b.x+1,y=b.y,dx=0,dy=-0.8,t=20,c=7,r=0,txt="1000"})
-   for i=1,6 do
-    local a=rnd(1)
-    add(parts,{x=b.x+4,y=b.y+4,dx=cos(a)*2,dy=sin(a)*2,t=6,c=7,r=1})
-   end
+  if not b.got and x2>=b.x and x1<=b.x+7
+   and y2>=b.y and y1<=b.y+7 then
+   b.got=true
+   score+=1
   end
- end
-
- -- goal
- if boxhit(p.x+1,p.y+2,6,6,fx,fy,8,8) then
-  win=true
  end
 end
 
-function upd_hair()
- local ax,ay=p.x+4-p.fac*2,p.y+1
- hair[1].x+=(ax-hair[1].x)*0.5
- hair[1].y+=(ay-hair[1].y)*0.5
- hair[2].x+=(hair[1].x-hair[2].x)*0.5
- hair[2].y+=(hair[1].y-hair[2].y)*0.5
+function movex()
+ p.rx+=p.vx
+ local a=flr(p.rx+0.5)
+ p.rx-=a
+ local s=sgn(a)
+ for i=1,abs(a) do
+  if bsol(p.x+s,p.y) then
+   p.vx=0 p.rx=0
+   break
+  end
+  p.x+=s
+ end
+end
+
+function movey()
+ p.ry+=p.vy
+ local a=flr(p.ry+0.5)
+ p.ry-=a
+ local s=sgn(a)
+ for i=1,abs(a) do
+  if bsol(p.x,p.y+s) then
+   p.vy=0 p.ry=0
+   break
+  end
+  p.y+=s
+ end
 end
 
 function _update()
  fr+=1
- if freeze>0 then freeze-=1 return end
- if win then return end
  -- ambient snow
  for s in all(snow) do
-  s.x-=s.s
-  s.y+=0.3+s.s*0.2
-  if s.x<-2 then s.x=130 end
-  if s.y>130 then s.y=-2 end
+  s.y+=s.s
+  s.x-=s.s*0.4
+  if s.y>128 then s.y=-2 s.x=rnd(128) end
+  if s.x<0 then s.x+=128 end
  end
- -- particles
- for pt in all(parts) do
-  pt.t-=1 pt.x+=pt.dx pt.y+=pt.dy
-  if pt.t<=0 then del(parts,pt) end
+ -- dash trail fade
+ for t in all(trail) do
+  t.t-=1
+  if t.t<=0 then del(trail,t) end
  end
- for b in all(berries) do b.t+=0.04 end
- if p.dead>0 then
-  p.dead-=1
-  if p.dead<=0 then reset_player() end
-  return
- end
- upd_player()
- upd_hair()
-end
-
-function _draw()
- cls(12)
- -- terrain: snowy tops, rock, dark caves deeper in
- palt(0,false)
- for cy=0,15 do
-  for cx=0,15 do
-   if tat(cx,cy)=="#" then
-    local s=3
-    if tat(cx,cy-1)!="#" then s=4
-    elseif tat(cx,cy-2)=="#" then s=5 end
-    spr(s,cx*8,cy*8)
+ -- demo cancel on any user button
+ if demo and not win then
+  for i=0,5 do
+   if btn(i) then
+    demo=false
+    reset()
+    return
    end
   end
  end
- palt()
- -- spikes + decor
- for cy=0,15 do
-  for cx=0,15 do
-   local t=tat(cx,cy)
-   if t=="^" then spr(6,cx*8,cy*8)
-   elseif t=="g" then spr(11,cx*8,cy*8)
-   elseif t=="w" then spr(10,cx*8,cy*8) end
+ if win then
+  winf+=1
+  if demo and not gifd and winf==45 then
+   extcmd("video",4,1)
+   gifd=true
+  end
+  return
+ end
+ if dead>0 then
+  dead-=1
+  if dead==0 then respawn() end
+  return
+ end
+ getinp()
+ if p.fz>0 then
+  p.fz-=1
+  return
+ end
+ local l,r,u,d=k[0],k[1],k[2],k[3]
+ local jp,dp=prs(4),prs(5)
+ if l then p.f=-1 elseif r then p.f=1 end
+ p.g=bsol(p.x,p.y+1)
+ if p.g then
+  p.cy=4
+  if p.dt<=0 then p.cd=true end
+ elseif p.cy>0 then
+  p.cy-=1
+ end
+ if jp then p.jb=4 elseif p.jb>0 then p.jb-=1 end
+ -- start dash
+ if dp and p.cd then
+  local dx,dy=0,0
+  if l then dx=-1 elseif r then dx=1 end
+  if u then dy=-1 elseif d then dy=1 end
+  if dx==0 and dy==0 then dx=p.f end
+  local m=1
+  if dx~=0 and dy~=0 then m=0.70710678 end
+  p.dvx=dx*5*m
+  p.dvy=dy*5*m
+  p.dt=4
+  p.fz=2
+  p.cd=false
+  return
+ end
+ if p.dt>0 then
+  -- dashing: no gravity, no run accel
+  p.dt-=1
+  p.vx=p.dvx
+  p.vy=p.dvy
+  add(trail,{x=p.x,y=p.y,t=8})
+  if p.dt==0 then
+   if p.dvx~=0 then p.vx=sgn(p.dvx) else p.vx=0 end
+   if p.dvy<0 then p.vy=-1.5
+   elseif p.dvy>0 then p.vy=1
+   else p.vy=0 end
+  end
+ else
+  local ax=0
+  if l then ax-=1 end
+  if r then ax+=1 end
+  if ax~=0 then
+   p.vx=mid(-1,p.vx+ax*0.6,1)
+  elseif abs(p.vx)>0.15 then
+   p.vx-=sgn(p.vx)*0.15
+  else
+   p.vx=0
+  end
+  if not p.g then
+   local gg=0.21
+   if abs(p.vy)<=0.15 then gg=0.105 end
+   p.vy=min(p.vy+gg,2)
+  end
+  if p.jb>0 and p.cy>0 then
+   p.vy=-2
+   p.jb=0
+   p.cy=0
+   p.g=false
   end
  end
- -- flag
- spr(8+flr(fr/8)%2,fx,fy)
+ movex()
+ movey()
+ hazards()
+end
+
+function drawplayer()
+ local hc=p.cd and 8 or 12
+ -- trailing hair blob
+ circfill(p.x+4-p.f*3,p.y+3,1,hc)
+ circfill(p.x+4-p.f*2,p.y+2,2,hc)
+ pal(8,hc)
+ spr(1,p.x,p.y,1,1,p.f==-1)
+ pal()
+end
+
+function _draw()
+ cls(0)
+ -- icy sky openings (background)
+ rectfill(0,0,14,55,12)
+ line(15,0,15,55,7)
+ pset(16,12,7) pset(16,30,7) pset(16,44,7)
+ rectfill(114,0,127,38,12)
+ line(113,0,113,38,7)
+ line(114,39,127,39,7)
+ pset(112,8,7) pset(112,26,7)
+ -- cave background bands
+ rectfill(18,16,110,22,1)
+ rectfill(24,44,110,50,1)
+ rectfill(0,70,54,76,1)
+ rectfill(64,98,127,104,1)
+ -- tiles
+ for ty=0,15 do
+  for tx=0,15 do
+   local c=tl(tx,ty)
+   if c=="#" then spr(2,tx*8,ty*8)
+   elseif c=="r" then spr(3,tx*8,ty*8)
+   elseif c=="i" then spr(9,tx*8,ty*8)
+   elseif c=="^" then spr(4,tx*8,ty*8)
+   elseif c=="f" then spr(6,tx*8,ty*8)
+   elseif c=="g" then spr(7,tx*8,ty*8)
+   elseif c=="w" then spr(8,tx*8,ty*8)
+   end
+  end
+ end
  -- berries
  for b in all(berries) do
   if not b.got then
-   spr(7,b.x,b.y+sin(b.t)*1.5)
+   spr(5,b.x,b.y+sin(fr/40))
   end
  end
- -- particles + dash trail
- for pt in all(parts) do
-  if pt.txt then
-   print(pt.txt,pt.x,pt.y,pt.c)
-  else
-   circfill(pt.x,pt.y,pt.r*(pt.t/8+0.3),pt.c)
-  end
+ -- white dash trail
+ for t in all(trail) do
+  circfill(t.x+4,t.y+4,t.t/3,7)
  end
- -- player + hair (hair color = dash indicator)
- if p.dead<=0 then
-  local hc=p.can_dash and 8 or 12
-  circfill(hair[2].x,hair[2].y,1,hc)
-  circfill(hair[1].x,hair[1].y,2,hc)
-  if not p.can_dash then pal(8,12) end
-  local sp=1
-  local ix=(btn(1) and 1 or 0)-(btn(0) and 1 or 0)
-  if not solid(p.x+1,p.y+8,6,1) then sp=2
-  elseif ix!=0 and flr(fr/4)%2==0 then sp=2 end
-  spr(sp,p.x,p.y,1,1,p.fac<0)
-  pal()
+ -- player
+ if dead>0 then
+  circ(dx0+4,dy0+4,(10-dead)*1.4,7)
+ else
+  drawplayer()
  end
- -- ambient snow
+ -- snow
  for s in all(snow) do
   pset(s.x,s.y,7)
-  if s.s>1.4 then pset(s.x+1,s.y,7) end
  end
- -- hud
- spr(7,2,2)
- print("x"..got,11,4,7)
- -- victory
+ -- ui: cartridge name always at top
+ print(name,51,3,1)
+ print(name,50,2,7)
+ spr(5,1,1)
+ print("x"..score,10,3,7)
+ if demo and not win then
+  print("demo",56,121,6)
+ end
  if win then
-  rectfill(28,50,99,74,0)
-  rect(28,50,99,74,7)
-  print("clear!",52,56,7)
-  print("berries:"..got.."/2",42,66,14)
+  rectfill(38,55,90,71,0)
+  rect(38,55,90,71,7)
+  print("clear!",53,61,7)
  end
 end
 __gfx__
-00000000000000000000000055555555777777770000000000000000000000000600000006000000000000000000000000000000000000000000000000000000
-0000000000000000000000005555555577777777000111000000000000300b0b06888800060888000ee0ee000000000000000000000000000000000000000000
-000000000088888000888880555055557577775700000000000000000003b33006888880068888800eeeee000000000000000000000000000000000000000000
-0000000008888888088888885555555555555555011000000007000700288882068888000608880000e8e0000000000000000000000000000000000000000000
-00000000088ffff8088ffff8555111555555555500000011000700070089888806000000060000000eeeee000003000000000000000000000000000000000000
-0000000008f1ff1808f1ff18555550555550555500000000006770670088889806000000060000000ee3ee00000b000b00000000000000000000000000000000
-0000000000fffff000fffff050555555555555550011100005676567008898880600000006000000000b00000003000b00000000000000000000000000000000
-00000000003333000733303055555555555550550000c00005666566002888820600000006000000000b00000000b0b300000000000000000000000000000000
+0000000000888800777777775555555500000000000b30006888800000000000000e000077777777000000000000000000000000000000000000000000000000
+00000000088888807fffff7f505555150000000000888800688888000000000000e8e0007ccccccc000000000000000000000000000000000000000000000000
+00000000088ff1f0ff7fffff5555055507000070087888806888800000000000000e0000cc7ccccc000000000000000000000000000000000000000000000000
+00000000088ffff0fffff7ff5155555507000070088888806888000000000000000b0000ccccc7cc000000000000000000000000000000000000000000000000
+0000000003bbbb307fffffff55555055077007700888888060000000000b0000000b30007ccccccc000000000000000000000000000000000000000000000000
+0000000003bbbb30ff7ffff7055555510770077002888820600000000b0b00b0000b0000ccc7cccc000000000000000000000000000000000000000000000000
+0000000000300300fffff7ff555155556770077600288200600000000b3b0b30000b0000ccccccc7000000000000000000000000000000000000000000000000
+0000000000f00f00ffffffff5555555577777777000000006000000003b33b3000b3b000cccccccc000000000000000000000000000000000000000000000000

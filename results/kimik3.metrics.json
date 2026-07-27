@@ -1,0 +1,30 @@
+{
+  "timestamp": "20260723-234150",
+  "out": "kimik3",
+  "model": "openrouter/moonshotai/kimi-k3",
+  "variant": null,
+  "rep": 1,
+  "status": "evaluating",
+  "session_id": "ses_06f127d26ffemu73y5CIUIA580",
+  "attempt": 2,
+  "stream_path": "results/runs/20260723-234150/kimik3.attempt-2.stream.jsonl",
+  "stream_paths": [
+    "results/runs/20260723-234150/kimik3.stream.jsonl",
+    "results/runs/20260723-234150/kimik3.attempt-2.stream.jsonl"
+  ],
+  "started_at": "2026-07-23T23:41:50+02:00",
+  "last_event_at": "2026-07-24T00:17:27+02:00",
+  "last_event_type": "session.status",
+  "last_progress_at": "2026-07-24T00:17:27+02:00",
+  "last_progress_type": "session.status",
+  "last_heartbeat_at": "2026-07-24T00:17:22+02:00",
+  "last_action_at": "2026-07-24T00:01:29+02:00",
+  "last_action_type": "prompt",
+  "idle_timeout_seconds": 600,
+  "cartridge_written": false,
+  "booted_clean": false,
+  "demo_gif_written": false,
+  "wall_seconds": 1976.29,
+  "error": null,
+  "provider_error": "output length limit reached"
+}

@@ -1,229 +1,238 @@
-# Preliminary Research
-
-This is a required first step. Before writing any code, use your web tools to search the web for Celeste Classic PICO-8 (the original 2015 PICO-8 platformer by Maddy Thorson and Noel Berry) and review how it works:
-
-- the readable 128x128 visual style
-- the core movement: running, jumping, and a fast 8-direction dash, and how the dash recharges
-- compact single-screen level design and pacing
-- the use of spikes, strawberries, platforms, walls, and goals
-- the overall feel: precise controls, short challenge, fast retry
-
-Use what you find only as reference. Do not copy the original level or its source code; your level must be original.
-
-## Reference Assets (on disk)
-
-Two reference images are provided on disk, relative to the repo root. Open and inspect them with your tools before drawing anything:
-
-- `assets/sprites.png`: a reference sprite sheet. Recreate these sprites in the cartridge so they are clearly recognizable from the reference — close in shape, color, and palette. Aim for recognizable, not pixel-perfect.
-- `assets/screenshot.png`: a capture of the target look (the 128x128 layout, mood, lighting and palette). Use it as your visual target for style and palette.
-
-Use these as concrete visual guides instead of inventing the look from scratch. Reproducing the sprites is encouraged; the level layout itself must still be your own original design (see Level Design below).
-
-Record your design as a short "design notes" comment block of 3 to 6 lines, placed as the first lines of Lua right after `__lua__`. State briefly:
-
-- the Celeste Classic traits you are emulating
-- your chosen movement constants
-- the single obstacle that will force the dash
-
-Keep it to a few lines. Do not write an essay.
-
-# Task
-
-Create a complete, playable PICO-8 cartridge for a single-screen Celeste-like platformer.
-
-The level must be designed by you. Level design is part of the evaluation.
-
-The game must be inspired by Celeste Classic PICO-8, visually and mechanically, but it must contain your own original level.
-
-If the repo contains previously produced cartridges (e.g. in `results/`), do not read or copy them; work only from this spec and the reference assets.
-
-## How to work
-
-After the research step, work in concrete, bounded iterations using your tools. Do not try to perfect the cartridge in your head before writing it.
-
-1. Draft: write the design-notes header, choose constants, design the level, implement a complete first version, and save it to the file you were asked to create.
-2. Run and fix: test the cartridge headless with `pico8 -x <yourfile>.p8 2>&1` (the `pico8` binary is in your PATH) and fix every `syntax error` or `runtime error` it prints. It reports only launch errors, not gameplay.
-3. Play-test (recommended): drive the game frame by frame with the `pico8` MCP tools as described in "Gameplay Self-Test" below.
-4. Improve: make focused improvements (movement feel, level readability, visuals), saving and re-running each time to confirm it still boots.
-5. Stop when the Final Check below passes, and leave the final file in place.
-
-The "don't over-deliberate" guidance applies to implementation and checking, not to the research step. Do not repeatedly re-derive the physics, and do not simulate the whole level in your head. Rely on the design rules and on actually running the cart.
-
-# Output and File
-
-Your deliverable is the file you were asked to create. The harness reads that file, not your chat messages, so iterate freely with your tools: only the final saved file is graded.
-
-The file must contain the raw cartridge text and nothing else:
-
-- line 1 exactly: pico-8 cartridge // http://www.pico-8.com
-- line 2 exactly: version 8
-- line 3 exactly: __lua__
-- then your Lua code, starting with the design-notes comment, plus any __gfx__ or __map__ sections you use
-
-No Markdown, no code fences, no prose inside the file. The cartridge must be self-contained: no includes, no external files.
-
-Two more file rules:
-
-- the graded file must never contain harness or debug code; the MCP tools test a temp copy automatically, and any manual harness experiment must happen on a copy in /tmp
-- if you include a `__gfx__` section, each line is exactly 128 hex chars; a partial section (only the first 8 or 16 lines) is fine
-
-# Controls
-
-Document the controls in a short code comment near the top of the cartridge.
-
-Required controls:
-
-- btn(0): move left
-- btn(1): move right
-- btn(2): aim dash up
-- btn(3): aim dash down
-- btnp(4): jump
-- btnp(5): dash
-
-# Movement Feel
-
-Choose your own movement constants. The game should feel close to Celeste Classic PICO-8:
-
-- responsive horizontal movement
-- readable jump arc
-- constant gravity
-- limited fall speed
-- short, fast, satisfying dash
-- gravity suspended during dash
-- diagonal dash normalized so it is not faster than a straight dash
-- reliable solid collision
-
-The game loop runs at 30fps (`_update`), the same rate as Celeste Classic, so movement constants found during your research can be reused at face value.
-
-Do not over-engineer the physics. Prioritize a playable, responsive platformer.
-
-# Dash Requirements
-
-The dash works on the ground and in the air whenever can_dash is true.
-
-When btnp(5) is pressed and can_dash is true:
-
-- read the direction from btn(0), btn(1), btn(2), btn(3)
-- if no direction is held, dash horizontally toward the facing direction
-- support all 8 directions
-- normalize diagonal dashes so a diagonal is not faster than a straight dash
-- set the player velocity from the dash direction
-- start a short dash timer
-- start a very short freeze (hitstop)
-- set can_dash to false
-
-During the freeze: no movement, no gravity.
-
-During the dash:
-
-- the player must actually move (apply the dash velocity to x and y)
-- do not apply gravity
-- do not apply normal run acceleration
-- emit a small white trail
-
-Dash recharge:
-
-- can_dash becomes true only when the player touches the ground
-- do not recharge against a wall
-- do not recharge in the air
-
-On respawn: reset the player to the start and reset can_dash to true.
-
-# Level Design
-
-Create your own original 16x16 tile single-screen level. The whole level fits inside 128x128 pixels with no scrolling.
-
-The level must include:
-
-- a clear player start in the left half of the screen
-- solid terrain
-- at least 2 spikes, avoidable with correct play
-- at least 2 strawberries, optional but reachable, not next to the start
-- a clearly visible goal flag in the right half or upper-right area, not close to the start
-- a completable main path from start to goal
-- at least one obstacle that requires a dash, with a safe landing zone after it
-
-The runner cannot test whether the level is beatable, so make solvability true by construction, not by trial:
-
-- Force the dash with an obstacle your jump cannot clear but your dash can: a gap wider than your running-jump distance, or a wall taller than your jump can climb but within your dash's reach, with no foothold.
-- Make the forcing numeric, not approximate: from your constants, compute the max run-jump distance (horizontal speed x total airtime) and the jump+dash reach. The forced gap must exceed the first by at least 8px and undercut the second by at least 8px, so it is impossible without the dash and comfortable with it.
-- A quick visual scan of your grid is enough to confirm the intended route needs the dash and has no obvious non-dash shortcut. Do not enumerate every possible path.
-
-Avoid: flat empty levels, impossible jumps, impossible dash gaps, unavoidable spikes, a goal next to the start.
-
-Fairness hint: in the original, up-spikes only kill while the player moves downward (vy >= 0), and the player hitbox is smaller than 8x8 (about 6x6). Without these details, spike patches wider than one tile become unfairly lethal.
-
-# Visual Requirements
-
-Use a clear Celeste-like PICO-8 visual style.
-
-Match the provided reference images: the drawn sprites should be recognizably based on `assets/sprites.png`, and the overall scene should resemble `assets/screenshot.png`. Aim for recognizable, not pixel-perfect.
-
-Beyond matching the references, the cartridge must also include these functional visuals (which a static screenshot does not show):
-
-- a visible dash-available indicator, such as a hair color change
-- a white dash trail
-- a few ambient particles such as snow or dust
-
-# Gameplay
-
-The game must include:
-
-- left/right movement
-- jump
-- 8-direction dash
-- spike death and respawn
-- strawberry collection and score
-- goal detection
-- a CLEAR! message when the goal is reached
-- a frozen game state after victory
-- infinite retries
-
-# Gameplay Self-Test (recommended)
-
-`pico8 -x` cannot press buttons: it only proves the cart boots. The `pico8` MCP tools let you play the cart interactively, frame by frame, in deterministic lockstep. This step is recommended, not required; it is the most reliable way to catch dead mechanics (a dash that does not move, spikes that do not kill, a goal that never triggers).
-
-The MCP copies your cart to /tmp and injects its control harness into the copy; your file is never modified, so you can point it at the deliverable directly. It requires a standard cart structure (`_update`/`_update60`, inputs read via `btn`/`btnp`).
-
-Workflow:
-
-- `pico8_boot` with the path to your cart: starts a session with game time frozen; pass a `seed` for deterministic `rnd()`
-- `pico8_step` / `pico8_play`: hold buttons (`"o"` = btn(4) jump, `"x"` = btn(5) dash) and advance N frames; buttons stay held between steps, and `btnp` fires only on the first frame of a new press, so release with `buttons: []` before pressing the same button again
-- `pico8_read`: read Lua globals by dotted path (e.g. `p.x`, `deaths`, `win`) to check state precisely instead of eyeballing pixels
-- `pico8_screen`: pixel-perfect screenshot of the 128x128 screen, useful to compare the look against `assets/screenshot.png`
-- `pico8_reset`: restart the session after editing the cart (it re-reads the file from disk); `pico8_shutdown` when done
-
-Compare the values you read to the ones you expect from your level grid; do not eyeball. Worthwhile scenarios:
-
-- walk into a spike: death, then respawn at the start with the dash restored
-- jump+dash across the forced obstacle: lands on the far side (assert x and y)
-- the same attempt without dashing: must fail
-- touch a strawberry: the score increments
-- reach the goal: the win flag is set and the position stays frozen afterwards
-
-If the MCP tools are not available, fall back to a scripted-input harness on a temp copy: shadow `btn`/`btnp` with globals driven from a `script()` function called in `_update`, `printh` the state, `extcmd("shutdown")` to end the run, and read the printh lines from `timeout 20 pico8 -x /tmp/test_play.p8 2>&1`.
-
-# Build Loop and Final Check
-
-Converge with the `pico8` binary, not your imagination. The `pico8` executable is available in your PATH. Test the cartridge headless with the `-x` flag, capturing output, under a short timeout (a cart that boots cleanly runs forever, so it will hit the timeout):
-
-    timeout 10 pico8 -x <yourfile>.p8 2>&1
-
-Then read the captured output. Do not rely on the exit code; read the text:
-
-- if it contains a line with `syntax error` or `runtime error`, fix the reported line and tab, then run again
-- if it prints only `RUNNING: <yourfile>.p8` with no error line (and reaches the timeout), the cart boots cleanly
-
-`pico8 -x` reports only boot, syntax, and runtime errors, not gameplay, so use it to guarantee a clean launch and rely on the design and visual rules above (and optionally the Gameplay Self-Test) for everything it cannot see.
-
-Stop as soon as all of these hold. Verify them by running and by reading your file; once they hold, stop and do not keep iterating:
-
-- `pico8 -x` prints no `syntax error` or `runtime error` for the cartridge (only `RUNNING:`)
-- the file begins with the three exact header lines, then the design-notes comment
-- _init(), _update(), and _draw() are defined
-- the code implements: an 8-direction dash that moves the player and recharges only on the ground; jump; spike death and respawn; strawberry collection and score; goal detection that shows CLEAR! and freezes the game
-- the level contains the required elements: a start, at least 2 spikes, at least 2 strawberries, a goal flag, and the dash-required obstacle
-- the sprites are recognizable from `assets/sprites.png` and the overall scene resembles `assets/screenshot.png`, including the dash-available indicator, the white dash trail, and ambient particles
-- the file holds only raw cartridge text
-
-Do not describe the test or output logs. Once the cart launches cleanly and the items above hold, stop and leave the file as the final answer.
+# Goal and Priorities
+
+Create a complete, playable PICO-8 cartridge for an original single-screen
+Celeste-like platformer. The result is judged in this order:
+
+1. Complete self-contained cartridge and clean boot.
+2. Responsive mechanics, reliable collision, and a solvable level.
+3. Deliberate visual composition closely following the supplied references.
+4. Deterministic demo driven only through normal logical inputs, ending in a saved GIF.
+5. Optional extras only after the first four priorities work.
+
+Do not simplify the level or visuals merely to make autoplay easy. A technically valid cart
+made from placeholder rectangles on a flat background is not a good result.
+
+# Bounded Reference Pass
+
+Before coding, review one or two web sources about Celeste Classic PICO-8, inspect
+`assets/sprites.png` and `assets/screenshot.png`, and make one short route sketch covering
+spawn, landing surfaces, reversal, berry detour, forced gap, and goal. Then stop researching:
+the constants and spacing rules below are authoritative.
+
+The screenshot is a 10x nearest-neighbor enlargement of a 128x128 frame. Match its palette,
+contrast, snowy cavern treatment, sprite scale, and mood, but create original geometry. Use
+web references for style and feel only, never source code. Do not inspect previous cartridges
+in `results/`.
+
+# Incremental Implementation
+
+Do not solve the entire level, collision system, or demo route mentally before writing code.
+Build a working foundation, then extend it through small isolated milestones. Use the todo
+tool to split implementation into concrete tasks. No implementation task may combine the
+complete mechanics, level, visuals, and demo. Each implementation task must produce a file
+edit, and every task must have one observable completion check.
+
+Stricty Use this progression, Step by step, one by one 
+
+1. Create a bootable cartridge foundation with player movement, gravity, collision helpers,
+   drawing, 2 plateform to jump between
+2. Add and test only the introduction route beat.
+3. Add and test only the variation and berry-detour beat.
+4. Add and test only the forced-gap climax and goal approach.
+5. Add hazards, collectibles, sprites, snow edges, and focused visual refinement.
+6. Add the deterministic demo one route beat at a time.
+7. Run the final integrated verification.
+
+At the start of each task, mark exactly one task in progress. For an implementation task, make
+one concrete decision and edit the cartridge immediately. For a verification task, run its
+check immediately. Fix only the first observed failure and mark the task complete once its
+local check passes. Do not calculate future trajectories or collision interactions while
+implementing an earlier beat; use the supplied spacing rules, implement the current beat, and
+validate it in the running cartridge. Once a beat passes, treat it as stable unless a later
+integrated test demonstrates a concrete regression.
+
+Incremental construction does not permit placeholder quality. The foundation must establish
+the intended palette, connected terrain masses, title zone, recognizable player silhouette,
+and deliberate route anchors. Later tasks refine and connect that foundation rather than
+replacing temporary rectangles.
+
+# Output Contract
+
+The invocation supplies a deliverable path, display name, and exact GIF filename. Use them
+literally. Normal PICO-8 uppercase glyph rendering of the display name is acceptable, but do
+not rename, abbreviate, or truncate it. The harness reads the file, not chat output.
+
+The file must contain raw cartridge text and begin exactly:
+
+    pico-8 cartridge // http://www.pico-8.com
+    version 8
+    __lua__
+
+Immediately after `__lua__`, add a 4-6-line Lua comment covering the reference-based visual
+traits, supplied movement constants, four-column dash gap and safe landing, route
+introduction/reversal/climax, and the demo's optional strawberry detour. Follow it with one
+short controls comment, Lua, and optional `__gfx__` or `__map__` sections.
+
+The cartridge must be self-contained: no Markdown, code fences, includes, harness code, or
+debug code. If `__gfx__` is present, every row must contain exactly 128 hexadecimal characters.
+
+# Controls and Mechanics
+
+Required controls: `btn(0/1)` move left/right, `btn(2/3)` aim the dash up/down, and
+`btnp(4/5)` jump/dash. Opposite directions on one axis cancel each other.
+
+Run `_update` at 30fps with these exact constants; do not derive alternatives or tune new
+reach values:
+
+- max run speed 1 px/frame, acceleration 0.6, deceleration 0.15
+- gravity 0.21 per frame, max fall speed 2, jump velocity -2
+- dash speed 5 px/frame, diagonal factor 0.7071
+- 2 hitstop updates followed by 4 moving dash updates; hitstop does not consume dash time
+
+Use consistent gravity outside hitstop and dash, reliable solid collision, and a 6x6 player
+hitbox. When `can_dash` is true, allow dashing on the ground or in the air. Read all four
+direction buttons, support all 8 normalized directions, and default to a horizontal dash
+toward the facing direction when no direction is held. Apply no movement or gravity during
+hitstop; during dash apply only dash velocity.
+
+Consume the dash immediately, recharge only on ground, never on walls or in air, and restore
+it on respawn. Show availability through the player sprite, such as hair color, and emit a
+short white trail while dashing.
+
+Gameplay also requires spike death and respawn, infinite retries, two collectible
+strawberries with visible score, a goal flag, `CLEAR!`, and victory. After victory, freeze
+player physics and hazards while continuing drawing and a 45-update recording timer.
+
+# Level Contract
+
+Build an original non-scrolling level on a 16x16-tile grid. Background framing may continue
+behind the top 8-pixel title zone, but no playable surface, hazard, or collectible may overlap
+the text. The completable main route has three beats:
+
+1. **Introduction:** start in the left half with one safe jump initiated while grounded.
+2. **Variation:** add vertical change, a meaningful horizontal reversal, a spike-constrained
+   move, a safe landing between challenges, and the optional berry detour.
+3. **Climax:** cross exactly 4 empty tile columns with run + jump + horizontal dash, land on
+   a safe surface at least 2 tiles wide, then approach an elevated goal in the right half.
+
+Across the route, provide at least 4 distinct landing surfaces in 3 height bands and at least
+3 deliberate jumps initiated while grounded. Include 2 separate avoidable spike groups; one
+must constrain a required takeoff or landing. Include at least 2 reachable but avoidable
+strawberries, both away from spawn and in different situations. The detour berry is the one
+collected by the demo; the other must remain avoidable from that route.
+
+The forced gap's takeoff and landing edges must be at the same height with exactly 4 empty
+tile columns between them. Use these known-good edge-to-edge spacings instead of calculating
+trajectories:
+
+- flat jump: at most a 2-tile gap
+- rising jump: at most 1 tile up and 1 tile across simultaneously
+- falling jump: at most a 3-tile horizontal gap
+- forced gap: 4 empty columns, crossed with run + jump + horizontal dash
+- at least 2 tiles of clear headroom along every required jump and dash path
+
+Construct from these rules, then run the cart. Verify once that the forced gap fails without
+dash and succeeds with dash. If a move fails, make the smallest local spacing correction; do
+not restart the layout, enumerate frame positions, add mechanics, or redesign for autoplay.
+
+Avoid flat floor routes, uniform stairs, repeated identical ledges, unavoidable spikes, goals
+near spawn, and long empty walks. Moving platforms, crumble blocks, wall jumps, and other
+extras must not displace core polish. For fair upward-facing spikes, kill only while the
+player is falling or grounded over them (`vy >= 0`), not while rising through their tips.
+
+# Visual Direction
+
+Treat the references as a production target, not vague inspiration. Before autoplay, build:
+
+- 2 or 3 large connected rock or ice masses with most playable ledges embedded in them
+- substantial dark negative space and three readable layers: distant silhouettes, playable
+  foreground terrain, and sparse particles behind gameplay
+- a quiet top 8-pixel title placement zone with the supplied display name and a contrasting
+  shadow; this is not a solid HUD rectangle, and cavern framing continues behind it
+- dark navy/black cavern interior, gray-brown rock, pale snow caps, occasional cyan ice, and
+  bright red/pink focal sprites with green stems and white highlights
+- sparse rock texture, irregular silhouette edges, and clear foreground/background contrast
+
+Recreate recognizable 8x8 pixel-art versions of the player, strawberry, spikes, snow edge,
+and one rock tile family from `assets/sprites.png`. Create an original readable goal flag in
+the same palette and pixel-art treatment. Sprites may use `__gfx__` or carefully drawn pixel
+primitives, but must have deliberate silhouettes and highlights, not placeholder squares.
+Keep solids, hazards, collectibles, player, and goal distinguishable at native scale. Add
+only a few ambient snow or dust particles.
+
+Before autoplay, capture a native 128x128 screen and compare it with both assets. Make at
+most two focused composition or sprite passes, stopping once the scene has framing terrain
+masses, snowy edges, recognizable sprites, a clear title zone, and distinct layer contrast.
+Do not accept isolated bars on a flat cyan or navy field.
+
+# Opening Demo and GIF
+
+Start a deterministic attract-mode demo on launch. Read physical `btn(0..5)` inputs first;
+if any are pressed during the demo, cancel it immediately and respawn into normal human play.
+Cancellation permanently disables GIF saving for that run. Otherwise feed synthetic logical
+inputs through the same `_update`, movement, collision, hazard, collection, and goal path used
+by human input.
+
+Use a small state-based controller whose phases advance from grounded state, position,
+platform identity, score, or goal state. Brief per-phase timers are fine. Do not build a long
+frame-by-frame input table or assign player coordinates directly.
+
+The demo must start at normal spawn, finish within 2,700 updates, traverse the real route,
+and make at least 3 genuine landings. It must take the optional detour, collect exactly 1
+strawberry, cross the four-column gap with jump + horizontal dash, and reach the real goal
+through normal collision. Never teleport, alter hazards, move the goal, assign victory
+directly, or add artificial idle segments before victory.
+
+At startup, pass the exact supplied GIF filename string to `extcmd("set_filename", ...)`,
+then call `extcmd("rec_frames")`. Only while the demo remains active and uncancelled, once
+normal goal collision sets victory, keep the frozen `CLEAR!` scene and display name visible
+for 45 updates, then call `extcmd("video",4,1)` exactly once. Never save a GIF if the demo is
+cancelled, times out, or fails before victory.
+
+# Bounded Build Loop
+
+Boot-check after a milestone or final edit, not after every small change. Do not repeat a
+passed check unless relevant code changed.
+
+1. Create the mechanical test room and verify its systems with MCP.
+2. Establish and inspect the visual foundation at native resolution.
+3. Replace the test room with the final route one tested beat at a time.
+4. Test death/respawn, berry collection, no-dash failure, dash success, and goal once each.
+5. Add and test the state-based demo one observed checkpoint at a time.
+6. Make at most one final pass for trail, particles, animation, or readability.
+7. Run `timeout 10 pico8 -x <yourfile>.p8 2>&1`; success is `RUNNING:` with no syntax or
+   runtime error regardless of the expected timeout status, then run one unattended demo
+   verification and stop.
+
+The mechanics and unattended demo checks are required; using MCP is recommended. With MCP,
+use `pico8_boot`, `pico8_play` or `pico8_step`, `pico8_read`, `pico8_screen`, and
+`pico8_reset`. Keep the player and game state (position, vy, grounded, dashing, can_dash,
+score, phase, win) in top-level globals so `pico8_read` observes them directly; in PICO-8 this
+is idiomatic, not debug or harness code. Never create an instrumented copy just to expose
+state. On a failed run, inspect only the first failure and record its phase, grounded
+state, position, deaths, score, and win state. Do not enumerate per-frame positions or pixel
+overlap arithmetic.
+
+Allow at most three focused demo-repair cycles. Change one state predicate or one local
+spacing per cycle, retest from launch, and replace timing-sensitive logic with grounded or
+position predicates instead of adding frame tuning.
+
+If MCP exits immediately after `extcmd("video",4,1)`, first verify from code and state that
+victory, score 1, the 45-update delay, and exact recorder calls are correct. Then treat it as
+a recorder-environment failure and rely on the benchmark capture; do not investigate PICO-8
+internals. If MCP is unavailable, test on a copy in `/tmp` with scripted logical inputs and
+`printh`. Never leave harness or debug code in the graded file.
+
+# Final Stop Gate
+
+After the final edit, verify once that:
+
+- the file satisfies the Output Contract, defines `_init`, `_update`, and `_draw`, and has no
+  debug, harness, or direct-demo-cheat code
+- clean boot and the Controls, Mechanics, Level, and Visual contracts pass
+- unattended autoplay wins through normal inputs with score 1, displays `CLEAR!` and the
+  supplied display name for 45 updates, and saves the exact GIF once
+- any physical `btn(0..5)` input cancels autoplay into normal human play
+
+Once all checks above pass after the final edit, stop immediately. Do not rerun seeds, repeat
+passed tests, redesign the level, or produce a testing essay.

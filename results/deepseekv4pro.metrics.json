@@ -1,0 +1,30 @@
+{
+  "timestamp": "20260723-232407",
+  "out": "deepseekv4pro",
+  "model": "voban/deepseek-v4-pro",
+  "variant": "max",
+  "rep": 1,
+  "status": "running",
+  "session_id": "ses_06f17845affe8zI8sFvD8V31Kw",
+  "attempt": 1,
+  "stream_path": "results/runs/20260723-232407/deepseekv4pro.stream.jsonl",
+  "stream_paths": [
+    "results/runs/20260723-232407/deepseekv4pro.stream.jsonl"
+  ],
+  "started_at": "2026-07-23T23:36:22+02:00",
+  "last_event_at": "2026-07-23T23:36:23+02:00",
+  "last_event_type": "session.status",
+  "last_progress_at": "2026-07-23T23:36:23+02:00",
+  "last_progress_type": "session.status",
+  "last_heartbeat_at": null,
+  "last_action_at": "2026-07-23T23:36:22+02:00",
+  "last_action_type": "prompt",
+  "idle_timeout_seconds": 600,
+  "action_timeout_seconds": 300,
+  "artifact_timeout_seconds": 480,
+  "cartridge_written": false,
+  "booted_clean": false,
+  "demo_gif_written": false,
+  "wall_seconds": null,
+  "error": null
+}
