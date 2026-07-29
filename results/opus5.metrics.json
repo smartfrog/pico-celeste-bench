@@ -1,0 +1,29 @@
+{
+  "timestamp": "20260729-220611",
+  "out": "opus5",
+  "model": "opencode/claude-opus-5",
+  "variant": "max",
+  "rep": 1,
+  "status": "running",
+  "session_id": "ses_0509beb2fffed6cplAwLP0IF68",
+  "attempt": 2,
+  "stream_path": "results/runs/20260729-220611/opus5.attempt-2.stream.jsonl",
+  "stream_paths": [
+    "results/runs/20260729-213957/opus5.stream.jsonl",
+    "results/runs/20260729-220611/opus5.attempt-2.stream.jsonl"
+  ],
+  "started_at": "2026-07-29T21:39:57+02:00",
+  "last_event_at": "2026-07-30T00:44:39+02:00",
+  "last_event_type": "session.diff",
+  "last_progress_at": "2026-07-30T00:44:39+02:00",
+  "last_progress_type": "message.updated",
+  "last_heartbeat_at": "2026-07-29T21:54:00+02:00",
+  "last_action_at": "2026-07-30T00:44:39+02:00",
+  "last_action_type": "read",
+  "idle_timeout_seconds": 600,
+  "cartridge_written": true,
+  "booted_clean": false,
+  "demo_gif_written": false,
+  "wall_seconds": 851.42,
+  "error": null
+}

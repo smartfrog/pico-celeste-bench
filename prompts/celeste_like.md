@@ -9,80 +9,135 @@ Celeste-like platformer. The result is judged in this order:
 4. Deterministic demo driven only through normal logical inputs, ending in a saved GIF.
 5. Optional extras only after the first four priorities work.
 
-Do not simplify the level or visuals merely to make autoplay easy. A technically valid cart
-made from placeholder rectangles on a flat background is not a good result.
+Aim for a cartridge that looks and plays like the references. A technically valid cart made
+from placeholder rectangles on a flat background scores badly.
 
-# Bounded Reference Pass
+# How To Work
 
-Before coding, review one or two web sources about Celeste Classic PICO-8, inspect
-`assets/sprites.png` and `assets/screenshot.png`, and make one short route sketch covering
-spawn, landing surfaces, reversal, berry detour, forced gap, and goal. Then stop researching:
-the constants and spacing rules below are authoritative.
+Work in short cycles: decide one thing, edit the cartridge, run a check, read the result.
 
-The screenshot is a 10x nearest-neighbor enlargement of a 128x128 frame. Match its palette,
-contrast, snowy cavern treatment, sprite scale, and mood, but create original geometry. Use
-web references for style and feel only, never source code. Do not inspect previous cartridges
-in `results/`.
+These are cheap and unlimited. Reach for them instead of working things out on paper:
 
-# Incremental Implementation
+- `python3 bench/route_check.py --from-cart <file>.p8 --solve` — geometry oracle
+- `timeout 10 pico8 -x <file>.p8 2>&1` — boot check
+- the `pico8` MCP tools — boot, play, read state, screenshot
 
-Do not solve the entire level, collision system, or demo route mentally before writing code.
-Build a working foundation, then extend it through small isolated milestones. Use the todo
-tool to split implementation into concrete tasks. No implementation task may combine the
-complete mechanics, level, visuals, and demo. Each implementation task must produce a file
-edit, and every task must have one observable completion check.
+Every question about reach, spacing, headroom, or solvability has a tool that answers it. Ask
+the tool and read its answer. Run the same check again after any change that could affect it.
 
-Stricty Use this progression, Step by step, one by one 
+## The file exists first
 
-1. Create a bootable cartridge foundation with player movement, gravity, collision helpers,
-   drawing, 2 plateform to jump between
-2. Add and test only the introduction route beat.
-3. Add and test only the variation and berry-detour beat.
-4. Add and test only the forced-gap climax and goal approach.
-5. Add hazards, collectibles, sprites, snow edges, and focused visual refinement.
-6. Add the deterministic demo one route beat at a time.
-7. Run the final integrated verification.
+Your first write creates the deliverable. Before looking at an image, searching the web, or
+planning a route, put this on disk in one write:
 
-At the start of each task, mark exactly one task in progress. For an implementation task, make
-one concrete decision and edit the cartridge immediately. For a verification task, run its
-check immediately. Fix only the first observed failure and mark the task complete once its
-local check passes. Do not calculate future trajectories or collision interactions while
-implementing an earlier beat; use the supplied spacing rules, implement the current beat, and
-validate it in the running cartridge. Once a beat passes, treat it as stable unless a later
-integrated test demonstrates a concrete regression.
+- the exact 3-line header
+- the design-notes comment, with your first draft of the 16x16 level grid inside it
+- a minimal Lua that boots: `_init`, `_update`, `_draw`, the movement constants, a player that
+  falls and lands, and the grid drawn as solid tiles
 
-Incremental construction does not permit placeholder quality. The foundation must establish
-the intended palette, connected terrain masses, title zone, recognizable player silhouette,
-and deliberate route anchors. Later tasks refine and connect that foundation rather than
-replacing temporary rectangles.
+That draft is allowed to be rough and the grid is allowed to be wrong; both get fixed by the
+tools. What matters is that from this point on there is a cartridge to run, measure, and
+improve, and that everything you learn lands in it instead of staying in your head.
+
+Then three invariants hold for the rest of the task:
+
+- the cartridge on disk boots
+- the cartridge on disk holds your current best design, including the current grid
+- nothing you work out stays outside the file
+
+Expected rhythm, with the tools doing the arithmetic:
+
+    read this prompt
+    write the .p8: header, notes with a draft 16x16 grid, bootable skeleton   <- first write
+    pico8 -x -> it boots
+    route_check --from-cart -> adjust the grid in the file -> re-run -> contract passes
+    view both reference images, skim one web reference, note the palette in the file
+    fill in the foundation: collision, dash, drawing, terrain from the grid
+    MCP boot -> walk, jump, dash -> read state
+    add spikes, strawberries, goal -> MCP: die and respawn, collect, win
+    draw sprites and compose the scene -> MCP screenshot at native size, compare to assets
+    route_check --solve -> take the reported move list
+    write the demo controller from that move list, one phase at a time
+    MCP run from launch -> watch it reach CLEAR!
+    final boot check, one unattended demo run, stop
+
+# Reference Pass
+
+Once the skeleton is on disk, view `assets/sprites.png` and `assets/screenshot.png` with the
+read tool, and skim one or two web pages about Celeste Classic PICO-8 for style and feel. Two
+helper commands are plenty if you want exact pixel values; the goal is a palette and a set of
+silhouettes you can draw, and that answer arrives by looking. Record what you take from them
+as a line or two in the cartridge's notes, then move on: the contracts below are
+authoritative.
+
+The screenshot is a 10x nearest-neighbour enlargement of a 128x128 frame. Match its palette,
+contrast, snowy cavern treatment, sprite scale, and mood while inventing your own geometry.
+Take style from the references and code from yourself. Leave the cartridges in `results/`
+alone; they are other entries in this benchmark.
+
+# Geometry Oracle
+
+`bench/route_check.py` answers layout questions using the same movement constants listed
+below. It is authoritative for spacing and reach; the running cartridge is authoritative for
+gameplay.
+
+Describe the level as a 16x16 grid, one row per line:
+
+    .  empty        #  solid rock or ice      ^  upward spike
+    s  spawn        b  strawberry             g  goal flag
+
+Keep that grid inside the cartridge, as a comment block or as a Lua table of 16 strings; the
+same grid can build your terrain at `_init`. Keep it even if you draw terrain from `__map__`,
+because tile numbers alone do not say which tiles are solid. Then:
+
+    python3 bench/route_check.py --grid level.txt                 # contract checks, instant
+    python3 bench/route_check.py --from-cart mycart.p8 --solve    # adds routes, a few seconds
+
+It reports landing surfaces and height bands, the forced gap, clear height above every
+surface, spike groups, strawberries, spawn footing, goal placement, whether the gap genuinely
+requires a dash, and a move list from spawn to the goal. It also echoes how it read each grid
+character, so a mismatch with your own legend is visible at a glance. Pass `--spawn COL,ROW`
+when the spawn lives in Lua rather than in the grid.
+
+That move list is the answer to "how does the demo get through": each entry is one
+grounded-initiated move such as `run right to the edge and jump + dash up-right`. Build the
+demo phases directly from it.
+
+Use these spacings as starting points and let the oracle confirm the exact case:
+
+- flat jump: 2-tile gap
+- rising jump: 1 tile up and 1 tile across together
+- falling jump: 3-tile gap
+- forced gap: 4 empty columns, crossed with run + jump + horizontal dash
+- 2 tiles of clear height above every surface a jump starts from
 
 # Output Contract
 
 The invocation supplies a deliverable path, display name, and exact GIF filename. Use them
-literally. Normal PICO-8 uppercase glyph rendering of the display name is acceptable, but do
-not rename, abbreviate, or truncate it. The harness reads the file, not chat output.
+literally. Normal PICO-8 uppercase glyph rendering of the display name is fine; keep the name
+itself intact. The harness reads the file, not chat output.
 
-The file must contain raw cartridge text and begin exactly:
+The file contains raw cartridge text and begins exactly:
 
     pico-8 cartridge // http://www.pico-8.com
     version 8
     __lua__
 
 Immediately after `__lua__`, add a 4-6-line Lua comment covering the reference-based visual
-traits, supplied movement constants, four-column dash gap and safe landing, route
-introduction/reversal/climax, and the demo's optional strawberry detour. Follow it with one
-short controls comment, Lua, and optional `__gfx__` or `__map__` sections.
+traits, the supplied movement constants, the four-column dash gap and its safe landing, the
+route's introduction/reversal/climax, and the demo's optional strawberry detour. Follow it
+with one short controls comment, then Lua, then optional `__gfx__` or `__map__` sections.
 
-The cartridge must be self-contained: no Markdown, code fences, includes, harness code, or
-debug code. If `__gfx__` is present, every row must contain exactly 128 hexadecimal characters.
+The cartridge is self-contained: plain cartridge text, no Markdown, code fences, includes,
+harness code, or debug code. When `__gfx__` is present, every row holds exactly 128
+hexadecimal characters.
 
 # Controls and Mechanics
 
 Required controls: `btn(0/1)` move left/right, `btn(2/3)` aim the dash up/down, and
 `btnp(4/5)` jump/dash. Opposite directions on one axis cancel each other.
 
-Run `_update` at 30fps with these exact constants; do not derive alternatives or tune new
-reach values:
+Run `_update` at 30fps with these exact constants:
 
 - max run speed 1 px/frame, acceleration 0.6, deceleration 0.15
 - gravity 0.21 per frame, max fall speed 2, jump velocity -2
@@ -92,22 +147,22 @@ reach values:
 Use consistent gravity outside hitstop and dash, reliable solid collision, and a 6x6 player
 hitbox. When `can_dash` is true, allow dashing on the ground or in the air. Read all four
 direction buttons, support all 8 normalized directions, and default to a horizontal dash
-toward the facing direction when no direction is held. Apply no movement or gravity during
-hitstop; during dash apply only dash velocity.
+toward the facing direction when no direction is held. During hitstop, hold everything still;
+during a dash, apply only the dash velocity.
 
-Consume the dash immediately, recharge only on ground, never on walls or in air, and restore
-it on respawn. Show availability through the player sprite, such as hair color, and emit a
-short white trail while dashing.
+Consume the dash immediately and recharge it only on the ground, never on walls or in the air;
+restore it on respawn. Show availability through the player sprite, such as hair colour, and
+emit a short white trail while dashing.
 
-Gameplay also requires spike death and respawn, infinite retries, two collectible
-strawberries with visible score, a goal flag, `CLEAR!`, and victory. After victory, freeze
-player physics and hazards while continuing drawing and a 45-update recording timer.
+Gameplay also needs spike death and respawn, infinite retries, two collectible strawberries
+with a visible score, a goal flag, `CLEAR!`, and victory. After victory, freeze player physics
+and hazards while drawing continues, and run a 45-update recording timer.
 
 # Level Contract
 
 Build an original non-scrolling level on a 16x16-tile grid. Background framing may continue
-behind the top 8-pixel title zone, but no playable surface, hazard, or collectible may overlap
-the text. The completable main route has three beats:
+behind the top 8-pixel title zone; playable surfaces, hazards, and collectibles stay out of
+it. The completable main route has three beats:
 
 1. **Introduction:** start in the left half with one safe jump initiated while grounded.
 2. **Variation:** add vertical change, a meaningful horizontal reversal, a spike-constrained
@@ -117,122 +172,113 @@ the text. The completable main route has three beats:
 
 Across the route, provide at least 4 distinct landing surfaces in 3 height bands and at least
 3 deliberate jumps initiated while grounded. Include 2 separate avoidable spike groups; one
-must constrain a required takeoff or landing. Include at least 2 reachable but avoidable
+constrains a required takeoff or landing. Include at least 2 reachable but avoidable
 strawberries, both away from spawn and in different situations. The detour berry is the one
-collected by the demo; the other must remain avoidable from that route.
+the demo collects; the other stays avoidable from that route.
 
-The forced gap's takeoff and landing edges must be at the same height with exactly 4 empty
-tile columns between them. Use these known-good edge-to-edge spacings instead of calculating
-trajectories:
+The forced gap's takeoff and landing edges sit at the same height with exactly 4 empty tile
+columns between them.
 
-- flat jump: at most a 2-tile gap
-- rising jump: at most 1 tile up and 1 tile across simultaneously
-- falling jump: at most a 3-tile horizontal gap
-- forced gap: 4 empty columns, crossed with run + jump + horizontal dash
-- at least 2 tiles of clear headroom along every required jump and dash path
+Sketch the grid, run the oracle, adjust the grid, and repeat until every contract check
+passes. Then build that grid in the cartridge and confirm in play.
 
-Construct from these rules, then run the cart. Verify once that the forced gap fails without
-dash and succeeds with dash. If a move fails, make the smallest local spacing correction; do
-not restart the layout, enumerate frame positions, add mechanics, or redesign for autoplay.
-
-Avoid flat floor routes, uniform stairs, repeated identical ledges, unavoidable spikes, goals
-near spawn, and long empty walks. Moving platforms, crumble blocks, wall jumps, and other
-extras must not displace core polish. For fair upward-facing spikes, kill only while the
-player is falling or grounded over them (`vy >= 0`), not while rising through their tips.
+Give each ledge a distinct size and purpose. Avoid flat floor routes, uniform stairs, repeated
+identical ledges, unavoidable spikes, goals near spawn, and long empty walks. Moving
+platforms, crumble blocks, wall jumps, and other extras come after core polish. Upward-facing
+spikes are fair: they kill only while the player is falling or grounded over them (`vy >= 0`),
+letting the player rise safely through their tips.
 
 # Visual Direction
 
-Treat the references as a production target, not vague inspiration. Before autoplay, build:
+Treat the references as a production target. Before autoplay, build:
 
 - 2 or 3 large connected rock or ice masses with most playable ledges embedded in them
 - substantial dark negative space and three readable layers: distant silhouettes, playable
   foreground terrain, and sparse particles behind gameplay
-- a quiet top 8-pixel title placement zone with the supplied display name and a contrasting
-  shadow; this is not a solid HUD rectangle, and cavern framing continues behind it
+- a quiet top 8-pixel title placement zone holding the supplied display name with a
+  contrasting shadow; cavern framing continues behind it rather than a solid HUD bar
 - dark navy/black cavern interior, gray-brown rock, pale snow caps, occasional cyan ice, and
   bright red/pink focal sprites with green stems and white highlights
 - sparse rock texture, irregular silhouette edges, and clear foreground/background contrast
 
 Recreate recognizable 8x8 pixel-art versions of the player, strawberry, spikes, snow edge,
-and one rock tile family from `assets/sprites.png`. Create an original readable goal flag in
-the same palette and pixel-art treatment. Sprites may use `__gfx__` or carefully drawn pixel
-primitives, but must have deliberate silhouettes and highlights, not placeholder squares.
-Keep solids, hazards, collectibles, player, and goal distinguishable at native scale. Add
-only a few ambient snow or dust particles.
+and one rock tile family from `assets/sprites.png`. Design an original readable goal flag in
+the same palette and treatment. Sprites may use `__gfx__` or carefully drawn pixel primitives,
+with deliberate silhouettes and highlights rather than plain squares. Keep solids, hazards,
+collectibles, player, and goal distinguishable at native scale, and add only a few ambient
+snow or dust particles.
 
-Before autoplay, capture a native 128x128 screen and compare it with both assets. Make at
-most two focused composition or sprite passes, stopping once the scene has framing terrain
-masses, snowy edges, recognizable sprites, a clear title zone, and distinct layer contrast.
-Do not accept isolated bars on a flat cyan or navy field.
+Capture a native 128x128 screen, compare it with both assets, and refine until the scene has
+framing terrain masses, snowy edges, recognizable sprites, a clear title zone, and distinct
+layer contrast. Isolated bars on a flat cyan or navy field mean the composition is not there
+yet.
 
 # Opening Demo and GIF
 
-Start a deterministic attract-mode demo on launch. Read physical `btn(0..5)` inputs first;
-if any are pressed during the demo, cancel it immediately and respawn into normal human play.
+Start a deterministic attract-mode demo on launch. Read physical `btn(0..5)` inputs first: if
+any is pressed during the demo, cancel it immediately and respawn into normal human play.
 Cancellation permanently disables GIF saving for that run. Otherwise feed synthetic logical
-inputs through the same `_update`, movement, collision, hazard, collection, and goal path used
-by human input.
+inputs through the same `_update`, movement, collision, hazard, collection, and goal path that
+human input uses.
 
 Use a small state-based controller whose phases advance from grounded state, position,
-platform identity, score, or goal state. Brief per-phase timers are fine. Do not build a long
-frame-by-frame input table or assign player coordinates directly.
+platform identity, score, or goal state. Brief per-phase timers are fine. The oracle's move
+list maps onto these phases one for one; build them from it rather than from a long
+frame-by-frame input table, and set no player coordinates directly.
 
-The demo must start at normal spawn, finish within 2,700 updates, traverse the real route,
-and make at least 3 genuine landings. It must take the optional detour, collect exactly 1
-strawberry, cross the four-column gap with jump + horizontal dash, and reach the real goal
-through normal collision. Never teleport, alter hazards, move the goal, assign victory
-directly, or add artificial idle segments before victory.
+The demo starts at normal spawn, finishes within 2,700 updates, traverses the real route, and
+makes at least 3 genuine landings. It takes the optional detour, collects exactly 1
+strawberry, crosses the four-column gap with jump + horizontal dash, and reaches the real goal
+through normal collision. It wins exactly as a player would: no teleporting, no altered
+hazards, no moved goal, no victory assigned directly, and no artificial idle padding before
+victory.
 
 At startup, pass the exact supplied GIF filename string to `extcmd("set_filename", ...)`,
-then call `extcmd("rec_frames")`. Only while the demo remains active and uncancelled, once
-normal goal collision sets victory, keep the frozen `CLEAR!` scene and display name visible
-for 45 updates, then call `extcmd("video",4,1)` exactly once. Never save a GIF if the demo is
-cancelled, times out, or fails before victory.
+then call `extcmd("rec_frames")`. While the demo is still active and uncancelled, once normal
+goal collision sets victory, keep the frozen `CLEAR!` scene and display name visible for 45
+updates, then call `extcmd("video",4,1)` exactly once. A cancelled, timed-out, or failed demo
+saves no GIF.
 
-# Bounded Build Loop
+# Build Loop
 
-Boot-check after a milestone or final edit, not after every small change. Do not repeat a
-passed check unless relevant code changed.
+Boot early and often; a cartridge that boots after every edit never accumulates a mystery
+failure. Keep the player and game state (position, vy, grounded, dashing, can_dash, score,
+phase, win) in top-level globals so `pico8_read` observes them directly — in PICO-8 this is
+idiomatic, not debug code, so the graded file keeps it.
 
-1. Create the mechanical test room and verify its systems with MCP.
+1. Boot-check the skeleton you wrote first, then grow its mechanics and verify them with MCP.
 2. Establish and inspect the visual foundation at native resolution.
-3. Replace the test room with the final route one tested beat at a time.
-4. Test death/respawn, berry collection, no-dash failure, dash success, and goal once each.
-5. Add and test the state-based demo one observed checkpoint at a time.
-6. Make at most one final pass for trail, particles, animation, or readability.
+3. Bring the grid up to an oracle-approved route, one tested beat at a time.
+4. Exercise death and respawn, berry collection, the gap without a dash, the gap with a dash,
+   and the goal.
+5. Add the state-based demo one observed checkpoint at a time.
+6. Polish trail, particles, animation, and readability.
 7. Run `timeout 10 pico8 -x <yourfile>.p8 2>&1`; success is `RUNNING:` with no syntax or
-   runtime error regardless of the expected timeout status, then run one unattended demo
-   verification and stop.
+   runtime error, the timeout firing being expected. Then run one unattended demo
+   verification.
 
-The mechanics and unattended demo checks are required; using MCP is recommended. With MCP,
-use `pico8_boot`, `pico8_play` or `pico8_step`, `pico8_read`, `pico8_screen`, and
-`pico8_reset`. Keep the player and game state (position, vy, grounded, dashing, can_dash,
-score, phase, win) in top-level globals so `pico8_read` observes them directly; in PICO-8 this
-is idiomatic, not debug or harness code. Never create an instrumented copy just to expose
-state. On a failed run, inspect only the first failure and record its phase, grounded
-state, position, deaths, score, and win state. Do not enumerate per-frame positions or pixel
-overlap arithmetic.
+With MCP, use `pico8_boot`, `pico8_play` or `pico8_step`, `pico8_read`, `pico8_screen`, and
+`pico8_reset`; MCP works on a temp copy, so the graded file stays untouched. When a run fails,
+look at the first failure only and note its phase, grounded state, position, deaths, score,
+and win state; then fix that one thing and rerun. Repair the demo one predicate or one local
+spacing at a time, preferring grounded and position predicates over timing tweaks. When a
+spacing looks marginal, ask the oracle rather than adjusting by feel.
 
-Allow at most three focused demo-repair cycles. Change one state predicate or one local
-spacing per cycle, retest from launch, and replace timing-sensitive logic with grounded or
-position predicates instead of adding frame tuning.
-
-If MCP exits immediately after `extcmd("video",4,1)`, first verify from code and state that
-victory, score 1, the 45-update delay, and exact recorder calls are correct. Then treat it as
-a recorder-environment failure and rely on the benchmark capture; do not investigate PICO-8
-internals. If MCP is unavailable, test on a copy in `/tmp` with scripted logical inputs and
-`printh`. Never leave harness or debug code in the graded file.
+If MCP exits immediately after `extcmd("video",4,1)`, confirm from code and state that
+victory, score 1, the 45-update delay, and the exact recorder calls are right, then treat it
+as a recorder-environment quirk and rely on the benchmark capture. If MCP is unavailable, test
+a copy in `/tmp` with scripted logical inputs and `printh`; the graded file stays free of
+harness and debug code.
 
 # Final Stop Gate
 
 After the final edit, verify once that:
 
-- the file satisfies the Output Contract, defines `_init`, `_update`, and `_draw`, and has no
-  debug, harness, or direct-demo-cheat code
+- the file satisfies the Output Contract, defines `_init`, `_update`, and `_draw`, and holds
+  no debug, harness, or demo-shortcut code
 - clean boot and the Controls, Mechanics, Level, and Visual contracts pass
 - unattended autoplay wins through normal inputs with score 1, displays `CLEAR!` and the
   supplied display name for 45 updates, and saves the exact GIF once
 - any physical `btn(0..5)` input cancels autoplay into normal human play
 
-Once all checks above pass after the final edit, stop immediately. Do not rerun seeds, repeat
-passed tests, redesign the level, or produce a testing essay.
+Once these pass after the final edit, stop and report what you built in a few lines.

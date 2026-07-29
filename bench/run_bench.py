@@ -66,13 +66,12 @@ def build_prompt(prompt_file_rel, cart_rel, cart_name, gif_name):
     hard rule against reading other models' results.
     """
     return (
-        f"Suis le prompt ici : {prompt_file_rel}. "
-        f"Mets ton resultat dans {cart_rel} . "
-        f"Le nom exact de la cartouche est {json.dumps(cart_name)} et doit etre "
-        f"affiche dans le jeu. Le nom exact du GIF a passer a "
-        f"extcmd(\"set_filename\", ...) est {json.dumps(gif_name)} . "
-        f"Il est strictement interdit de consulter les realisations des autres "
-        f"modeles dans ./results ."
+        f"Follow the task in {prompt_file_rel}. "
+        f"Write your result to {cart_rel} . "
+        f"The cartridge display name is exactly {json.dumps(cart_name)} and must "
+        f"appear in the game. The GIF filename to pass to "
+        f"extcmd(\"set_filename\", ...) is exactly {json.dumps(gif_name)} . "
+        f"Do not look at the other models' cartridges in ./results ."
     )
 
 
@@ -128,28 +127,46 @@ def print_live_event(evt):
         print(f"        {line}", flush=True)
 
 
-def build_resume_prompt(error_message, cart_exists, booted_clean, demo_gif_written):
-    """Build a targeted resume message based on the failure mode."""
+def build_resume_prompt(error_message, cart_exists, booted_clean, demo_gif_written,
+                        cart_path=None):
+    """Build a targeted resume message based on the failure mode.
+
+    Every resume starts from the file on disk. A previous turn's reasoning is not
+    replayed, so re-deriving the design from memory wastes the whole attempt; the
+    cartridge is the only durable state.
+    """
+    target = str(cart_path) if cart_path else "the cartridge"
     if not cart_exists:
         return (
-            "Continue depuis ton etat actuel. N'effectue pas la recherche a nouveau. "
-            "Aucune cartouche valide n'a ete produite. Ecris le fichier .p8 demande "
-            "maintenant, verifie le boot avec pico8 -x, puis termine."
+            f"Resume the task. Nothing exists at {target} yet. Your first tool call "
+            "must write that file, before anything else: the exact 3-line header, "
+            "the notes comment holding your 16x16 grid, and a minimal Lua that "
+            "boots (_init, _update, _draw, the movement constants, a player that "
+            "falls and lands, the grid drawn as solid tiles). A rough draft is "
+            "fine, the tools will fix it. Only then run pico8 -x, then "
+            "bench/route_check.py. Keep the design in the file rather than in your "
+            "head: the file on disk is the only state that survives."
         )
     if not booted_clean:
         return (
-            "Continue depuis ton etat actuel. La cartouche ne demarre pas proprement. "
-            "Lance pico8 -x, corrige les erreurs de syntaxe/runtime, puis termine."
+            f"Resume the task. Start by re-reading {target}: that file is your real "
+            "state, since the previous turn's reasoning is not replayed. The "
+            "cartridge does not boot cleanly. Run timeout 10 pico8 -x, fix the "
+            "first syntax or runtime error, run it again, then finish. Keep the "
+            "level you already have."
         )
     if not demo_gif_written:
         return (
-            "Continue depuis ton etat actuel. La cartouche demarre mais l'autoplay "
-            "n'a pas cree le GIF. Corrige uniquement la demo pour qu'elle atteigne "
-            "vraiment CLEAR! et sauvegarde le GIF, puis termine."
+            f"Resume the task. Start by re-reading {target}: that file is your real "
+            "state, since the previous turn's reasoning is not replayed. The "
+            "cartridge boots but the autoplay did not create the GIF. Check the "
+            f"route with python3 bench/route_check.py --from-cart {target} --solve, "
+            "fix the demo controller so it reaches CLEAR! and saves the GIF, then "
+            "finish. Keep the level you already have."
         )
     return (
-        "Continue depuis ton etat actuel. N'effectue pas la recherche a nouveau. "
-        "Termine la tache demandee maintenant."
+        f"Resume the task. Start by re-reading {target}, then finish what is "
+        "missing. Keep the level you already have and do not repeat the research."
     )
 
 
@@ -404,6 +421,204 @@ def extract_stream_metrics_many(stream_paths):
     }
 
 
+EDIT_TOOLS = frozenset({"write", "edit", "patch", "apply_patch", "multiedit"})
+
+
+def edits_the_cartridge(part):
+    """True when a file-writing tool call targeted a cartridge, not scratch work.
+
+    The task tells models to test on copies in /tmp and to keep scratch grids, so
+    counting every write would credit exactly the activity this metric exists to
+    distinguish from real progress.
+    """
+    if part.get("tool") not in EDIT_TOOLS:
+        return False
+    state = part.get("state") or {}
+    target = (state.get("input") or {}).get("filePath")
+    if not isinstance(target, str):
+        # apply_patch and friends carry no filePath; count them, since a model
+        # using them is editing the deliverable in practice.
+        return True
+    if target.startswith("/tmp/"):
+        return False
+    return target.endswith(".p8")
+
+
+def extract_effort_metrics(stream_path):
+    """Measure how much of an attempt was thinking versus doing.
+
+    A run that reasons for half an hour without touching a file looks identical
+    to a healthy run in token totals, so the shape of the work is recorded too:
+    how long until the first tool call, until the first file edit, and the
+    longest stretch with no tool call at all.
+    """
+    reasoning_updated = {}
+    reasoning_ids = set()
+    text_deltas = collections.Counter()
+    seen_tools = set()
+    tool_times = []
+    first_edit_at = None
+    edits = 0
+    first_timestamp = None
+    last_timestamp = None
+
+    with open(stream_path) as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            timestamp = event.get("timestamp")
+            if isinstance(timestamp, (int, float)):
+                if first_timestamp is None:
+                    first_timestamp = timestamp
+                last_timestamp = timestamp
+
+            event_type = event.get("type")
+            properties = event.get("properties") or {}
+
+            if event_type == "message.part.delta":
+                # A delta carries no part type, so it is attributed later using
+                # the part ids announced as reasoning.
+                if properties.get("field") == "text":
+                    part_id = properties.get("partID")
+                    value = properties.get("delta") or properties.get("value") or ""
+                    if part_id:
+                        text_deltas[part_id] += len(value)
+                continue
+
+            if event_type == "tool_use":
+                # Legacy stream shape: one event per completed tool call. These
+                # streams never carried reasoning text, so only timings emerge.
+                part = event.get("part") or {}
+                tool_times.append(timestamp)
+                if edits_the_cartridge(part):
+                    edits += 1
+                    if first_edit_at is None:
+                        first_edit_at = timestamp
+                continue
+
+            if event_type != "message.part.updated":
+                continue
+
+            part = properties.get("part") or {}
+            part_id = part.get("id")
+            part_type = part.get("type")
+
+            if part_type == "reasoning" and part_id:
+                reasoning_ids.add(part_id)
+                length = len(part.get("text") or "")
+                reasoning_updated[part_id] = max(
+                    reasoning_updated.get(part_id, 0), length,
+                )
+            elif part_type == "tool":
+                state = part.get("state") or {}
+                if (
+                    part_id not in seen_tools
+                    and state.get("status") in ("completed", "error")
+                ):
+                    seen_tools.add(part_id)
+                    tool_times.append(timestamp)
+                    if edits_the_cartridge(part):
+                        edits += 1
+                        if first_edit_at is None:
+                            first_edit_at = timestamp
+
+    # Updates carry cumulative text and deltas carry increments, so the larger
+    # of the two is the part's real length.
+    reasoning_chars = sum(
+        max(reasoning_updated.get(part_id, 0), text_deltas.get(part_id, 0))
+        for part_id in reasoning_ids
+    )
+
+    def since_start(timestamp):
+        if timestamp is None or first_timestamp is None:
+            return None
+        return round((timestamp - first_timestamp) / 1000, 2)
+
+    known_tool_times = [t for t in tool_times if isinstance(t, (int, float))]
+    boundaries = [first_timestamp] + known_tool_times + [last_timestamp]
+    boundaries = [t for t in boundaries if isinstance(t, (int, float))]
+    gaps = [
+        (later - earlier) / 1000
+        for earlier, later in zip(boundaries, boundaries[1:])
+    ]
+    first_tool_at = known_tool_times[0] if known_tool_times else None
+
+    return {
+        "reasoning_chars": reasoning_chars,
+        "tool_calls_completed": len(known_tool_times),
+        "cart_edits": edits,
+        "time_to_first_tool_s": since_start(first_tool_at),
+        "time_to_first_edit_s": since_start(first_edit_at),
+        "max_no_tool_gap_s": round(max(gaps), 2) if gaps else None,
+        # Absolute stamps let a resumed session measure its delays from the
+        # moment the task was first handed over, not from a later attempt.
+        "first_event_at": first_timestamp,
+        "first_tool_at": first_tool_at,
+        "first_edit_at": first_edit_at,
+    }
+
+
+def earliest(current, candidate):
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return min(current, candidate)
+
+
+def combine_effort_metrics(stream_paths):
+    """Merge per-attempt effort metrics for one resumed session.
+
+    Delays are measured from the start of the first attempt, so a session that
+    only writes a file on its third resume reports the true wait rather than a
+    few seconds into whichever attempt happened to do it.
+    """
+    combined = {
+        "reasoning_chars": 0,
+        "tool_calls_completed": 0,
+        "cart_edits": 0,
+        "time_to_first_tool_s": None,
+        "time_to_first_edit_s": None,
+        "max_no_tool_gap_s": None,
+    }
+    session_start = None
+    first_tool_at = None
+    first_edit_at = None
+
+    for stream_path in stream_paths:
+        try:
+            metrics = extract_effort_metrics(stream_path)
+        except OSError:
+            continue
+        for field in ("reasoning_chars", "tool_calls_completed", "cart_edits"):
+            combined[field] += metrics[field] or 0
+        gap = metrics["max_no_tool_gap_s"]
+        if gap is not None:
+            current = combined["max_no_tool_gap_s"]
+            combined["max_no_tool_gap_s"] = gap if current is None else max(current, gap)
+        # Earliest wins, so the result does not depend on the order the caller
+        # happens to list the attempts in.
+        session_start = earliest(session_start, metrics["first_event_at"])
+        first_tool_at = earliest(first_tool_at, metrics["first_tool_at"])
+        first_edit_at = earliest(first_edit_at, metrics["first_edit_at"])
+
+    def since_session_start(timestamp):
+        if timestamp is None or session_start is None:
+            return None
+        return round((timestamp - session_start) / 1000, 2)
+
+    combined["time_to_first_tool_s"] = since_session_start(first_tool_at)
+    combined["time_to_first_edit_s"] = since_session_start(first_edit_at)
+    calls = combined["tool_calls_completed"]
+    combined["reasoning_per_tool_call"] = (
+        round(combined["reasoning_chars"] / calls) if calls else None
+    )
+    return combined
+
+
 def check_boot(cart_path):
     """Factual clean-boot check via `pico8 -x`. Returns True/False/None."""
     if not cart_path.exists():
@@ -478,6 +693,9 @@ CSV_FIELDS = [
     "cache_read", "cache_write", "tokens_total",
     "cost", "wall_seconds", "session_seconds",
     "assistant_messages", "tool_calls_total", "tool_calls_by_name",
+    "reasoning_chars", "reasoning_per_tool_call", "tool_calls_completed",
+    "cart_edits", "time_to_first_tool_s", "time_to_first_edit_s",
+    "max_no_tool_gap_s",
     "error",
 ]
 
@@ -491,6 +709,10 @@ def write_csv(rows, csv_path):
             if isinstance(row.get("tool_calls_by_name"), dict):
                 row["tool_calls_by_name"] = json.dumps(row["tool_calls_by_name"])
             writer.writerow(row)
+
+
+def blank_if_none(value):
+    return "" if value is None else value
 
 
 def write_markdown(rows, md_path):
@@ -528,9 +750,32 @@ def write_markdown(rows, md_path):
                 err=err,
             )
         )
+
+    effort = [
+        "\n## Thinking versus doing\n\n"
+        "| Result | Reason chars | Per tool call | Tools | Edits | 1st tool s | "
+        "1st edit s | Longest silence s |\n"
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+    ]
+    for r in ranked:
+        effort.append(
+            "| {out} | {chars} | {per} | {tools} | {edits} | {first} | {edit} | "
+            "{gap} |\n".format(
+                out=r.get("out", ""),
+                chars=r.get("reasoning_chars", ""),
+                per=blank_if_none(r.get("reasoning_per_tool_call")),
+                tools=r.get("tool_calls_completed", ""),
+                edits=r.get("cart_edits", ""),
+                first=blank_if_none(r.get("time_to_first_tool_s")),
+                edit=blank_if_none(r.get("time_to_first_edit_s")),
+                gap=blank_if_none(r.get("max_no_tool_gap_s")),
+            )
+        )
+
     with open(md_path, "w") as f:
         f.write("# Benchmark Metrics\n\n")
         f.write("".join(lines))
+        f.write("".join(effort))
 
 
 def main():
@@ -538,6 +783,8 @@ def main():
     parser.add_argument("--config", default=str(REPO_ROOT / "bench" / "models.json"))
     parser.add_argument("--dry-run", action="store_true", help="print planned runs, do nothing")
     parser.add_argument("--quiet", action="store_true", help="hide live model and tool activity")
+    parser.add_argument("--interactive", action="store_true",
+                        help="ask before each resume instead of resuming automatically")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -601,14 +848,23 @@ def main():
             print(f"    Incomplete session found: {saved_metrics['session_id']}")
             print(f"    status={saved_metrics.get('status', 'unknown')} "
                   f"last_event={saved_metrics.get('last_event_at', 'unknown')}")
-            if not sys.stdin.isatty():
-                print("    SKIP incomplete run (confirmation requires a TTY)")
-                continue
-            try:
-                choice = input("    [r]esume / [n]ew session / [s]kip: ").strip().lower()
-            except EOFError:
-                choice = "s"
+            saved_attempt = int(saved_metrics.get("attempt") or 1)
+            budget_left = saved_attempt < cfg["max_attempts"]
+            choice = "r" if budget_left else "s"
+            if args.interactive:
+                if not sys.stdin.isatty():
+                    print("    SKIP incomplete run (confirmation requires a TTY)")
+                    continue
+                try:
+                    choice = input("    [r]esume / [n]ew session / [s]kip: ").strip().lower()
+                except EOFError:
+                    choice = "s"
+            elif not budget_left:
+                print(f"    SKIP: attempt {saved_attempt} already reached "
+                      f"max_attempts={cfg['max_attempts']}")
             if choice == "r":
+                if not args.interactive:
+                    print("    Resuming automatically")
                 resume_session_id = saved_metrics["session_id"]
                 attempt = int(saved_metrics.get("attempt") or 1) + 1
                 stream_path = run_dir / f"{base}.attempt-{attempt}.stream.jsonl"
@@ -639,6 +895,7 @@ def main():
                 cart_path.exists(),
                 bool((saved_metrics or {}).get("booted_clean")),
                 gif_path.exists(),
+                cart_path=cart_rel,
             )
             if resume_session_id else
             build_prompt(prompt_file_rel, cart_rel, p["cart_name"], f"{base}.gif")
@@ -736,10 +993,10 @@ def main():
         if incomplete_reason and not error_message:
             error_message = incomplete_reason
 
-        # Interactive resume on failure (TTY only).
+        # Resume on failure. Unattended by default so a whole benchmark can run
+        # without supervision; --interactive restores the prompt-per-attempt flow.
         while (
-            sys.stdin.isatty()
-            and session_id
+            session_id
             and not (cart_path.exists() and booted_clean and demo_gif_written)
             and is_resumable(error_message)
             and attempt < cfg["max_attempts"]
@@ -749,20 +1006,26 @@ def main():
                   f"boot={'ok' if booted_clean else 'FAIL'} "
                   f"gif={'ok' if demo_gif_written else 'missing'}")
             print(f"    session={session_id}")
-            try:
-                choice = input("    Resume? [r]esume / [s]kip / [a]bort: ").strip().lower()
-            except EOFError:
-                break
-            if choice == "a":
-                print("    Aborting benchmark.")
-                break
-            if choice != "r":
-                break
+            if args.interactive:
+                if not sys.stdin.isatty():
+                    break
+                try:
+                    choice = input(
+                        "    Resume? [r]esume / [s]kip / [a]bort: "
+                    ).strip().lower()
+                except EOFError:
+                    break
+                if choice == "a":
+                    print("    Aborting benchmark.")
+                    break
+                if choice != "r":
+                    break
 
             attempt += 1
             attempt_stream = run_dir / f"{base}.attempt-{attempt}.stream.jsonl"
             resume_prompt = build_resume_prompt(
                 error_message, cart_path.exists(), booted_clean, demo_gif_written,
+                cart_path=cart_path.relative_to(REPO_ROOT),
             )
             print(f"    Resuming session {session_id} (attempt {attempt})...")
             run_metrics.update({
@@ -841,17 +1104,20 @@ def main():
             "tool_calls_by_name": None,
         }
 
+        attempt_streams = [
+            REPO_ROOT / path for path in run_metrics["stream_paths"]
+            if (REPO_ROOT / path).exists()
+        ]
         if session_id:
             export_data = export_session(session_id, export_path)
             if export_data:
                 row.update(extract_metrics(export_data))
             else:
                 print("    using JSONL stream fallback for metrics")
-                attempt_streams = [
-                    REPO_ROOT / path for path in run_metrics["stream_paths"]
-                    if (REPO_ROOT / path).exists()
-                ]
                 row.update(extract_stream_metrics_many(attempt_streams))
+        # Effort metrics always come from the stream: the export has no timing
+        # for individual parts, so it cannot show thinking-without-acting.
+        row.update(combine_effort_metrics(attempt_streams))
 
         write_json_atomic(metrics_path, row)
         rows.append(row)
