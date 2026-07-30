@@ -1,430 +1,525 @@
 pico-8 cartridge // http://www.pico-8.com
 version 8
 __lua__
--- design notes: compact snowy cave, crisp retries, red/blue dash hair, and celeste-like berries.
--- movement: run 1.5, jump -3.4, gravity .18, fall 2.5; dash 4.5 for 8 frames.
--- climax: a 70px gap exceeds the 58.5px run-jump range but fits the 94.5px dash reach.
--- route: safe right jump, left reversal, spike-threaded diagonal rise, then a high return.
--- the final horizontal dash crosses to a safe snowy goal shelf after the vertical variation.
--- demo takes the risky extra jump to the tiny far-left berry perch, skipping the east berry.
--- controls: arrows move/aim, btnp(4) jumps, btnp(5) dashes; any button cancels autoplay.
+-- reference look: black/navy cavern, chunky gray rock, pale snow, cyan ice, bright focal sprites.
+-- motion: run 1, accel .6, decel .15; gravity .21/fall 2/jump -2; dash 5 at .7071, 2 stop + 4 move.
+-- climax: a same-height four-column void ends on a safe two-tile snowy landing beside spikes.
+-- route: an easy right jump introduces motion, then a left-right switchback rises to the gap.
+-- demo: normal logical inputs take the lower strawberry detour, cross the gap, and raise the flag.
+-- controls: arrows move/aim, o jumps, x dashes.
 
-title="GPT-5.6 Sol"
-gif_name="gpt56-sol.gif"
+--[[level grid
+................
+................
+................
+................
+................
+................
+................
+................
+b.............g.
+^.........^.####
+####....####....
+.......b........
+......###.......
+..###...........
+.s....####......
+######......####
+]]
 
-plats={
- {x=3,y=116,w=53,h=12},
- {x=40,y=100,w=33,h=9},
- {x=8,y=84,w=27,h=8},
- {x=1,y=69,w=11,h=7},
- {x=46,y=68,w=30,h=9},
- {x=8,y=52,w=27,h=9},
- {x=104,y=52,w=23,h=14},
- {x=82,y=95,w=17,h=7}
+level={
+ "................",
+ "................",
+ "................",
+ "................",
+ "................",
+ "................",
+ "................",
+ "................",
+ "b.............g.",
+ "^.........^.####",
+ "####....####....",
+ ".......b........",
+ "......###.......",
+ "..###...........",
+ ".s....####......",
+ "######......####"
 }
 
-spikes={
- {x=56,y=113,w=48,h=8},
- {x=46,y=62,w=7,h=6},
- {x=69,y=62,w=7,h=6}
-}
+max_run=1
+accel=.6
+decel=.15
+gravity=.21
+max_fall=2
+jump_v=-2
+dash_speed=5
+dash_diag=.7071
 
-berries={
- {x=3,y=59,got=false},
- {x=88,y=86,got=false}
-}
-
-function _init()
- srand(56)
- snow={}
- trail={}
- dust={}
- for i=1,18 do
-  add(snow,{x=rnd(128),y=rnd(128),s=.15+rnd(.25),c=i%4==0 and 6 or 7})
- end
- demo=true
- dphase=0
- dshot=false
- oldctl={}
- ctl={}
- for i=0,5 do oldctl[i]=false ctl[i]=false end
- deaths=0
- score=0
- won=false
- clear_t=0
- gif_saved=false
- reset_player()
- extcmd("set_filename",gif_name)
- extcmd("rec_frames")
+function approach(v,target,step)
+ if v>target then return max(v-step,target) end
+ return min(v+step,target)
 end
 
-function reset_player()
- p={x=11,y=109,vx=0,vy=0,w=6,h=7,face=1,can_dash=true,dash_t=0,freeze=0}
+function tile(tx,ty)
+ if tx<0 or tx>15 then return "#" end
+ if ty<0 or ty>15 then return "." end
+ return sub(level[ty+1],tx+1,tx+1)
 end
 
-function respawn()
- deaths+=1
- reset_player()
- if demo then
-  dphase=0
-  dshot=false
-  score=0
-  for b in all(berries) do b.got=false end
- end
+function solid_at(px,py)
+ return tile(flr(px/8),flr(py/8))=="#"
 end
 
-function raw_button()
- for i=0,5 do if btn(i) then return true end end
- return false
-end
-
-function grounded()
- return solid_at(p.x,p.y+1)
-end
-
-function on_plat(n)
- local r=plats[n]
- return grounded() and abs((p.y+p.h)-r.y)<1.1 and p.x+p.w>r.x and p.x<r.x+r.w
-end
-
-function demo_inputs()
- for i=0,5 do ctl[i]=false end
- local g=grounded()
-
- -- resolve landings before choosing this frame's next action
- if dphase==0 and on_plat(2) then dphase=1
- elseif dphase==1 and on_plat(3) then dphase=2
- elseif dphase==2 and berries[1].got and on_plat(4) then dphase=3
- elseif dphase==3 and on_plat(3) then dphase=4 dshot=false
- elseif dphase==4 and on_plat(5) then dphase=5
- elseif dphase==5 and on_plat(6) then dphase=6 dshot=false
- elseif dphase==6 and on_plat(7) then dphase=7 end
-
- if dphase==0 then
-  -- safe introduction: run, then jump right onto the broad shelf
-  if g and p.x<22 then ctl[1]=true
-  elseif g then ctl[1]=true ctl[4]=true
-  elseif p.x<52 then ctl[1]=true
-  elseif p.x>58 then ctl[0]=true end
-
- elseif dphase==1 then
-  -- reverse left to the middle shelf
-  if g then ctl[0]=true ctl[4]=true
-  elseif p.x>19 then ctl[0]=true
-  elseif p.x<14 then ctl[1]=true end
-
- elseif dphase==2 then
-  -- optional extra-risk berry jump to the tiny western perch
-  if g then ctl[0]=true ctl[4]=true
-  elseif p.x>3 then ctl[0]=true
-  else ctl[1]=true end
-
- elseif dphase==3 then
-  -- jump back down to rejoin the main route
-  if g then ctl[1]=true ctl[4]=true
-  elseif p.x<18 then ctl[1]=true
-  elseif p.x>25 then ctl[0]=true end
-
- elseif dphase==4 then
-  -- diagonal up-right dash threads the spike-edged landing
-  if g then ctl[1]=true ctl[4]=true
-  elseif not dshot and p.y<74 then
-   ctl[1]=true ctl[2]=true ctl[5]=true dshot=true
-  elseif p.x<56 then ctl[1]=true
-  elseif p.x>60 then ctl[0]=true end
-
- elseif dphase==5 then
-  -- another reversal climbs to the launch shelf
-  if g then ctl[0]=true ctl[4]=true
-  elseif p.x>21 then ctl[0]=true
-  elseif p.x<15 then ctl[1]=true end
-
- elseif dphase==6 then
-  -- jump, then horizontal dash near the apex of the forced 70px gap
-  if g and p.x<25 then ctl[1]=true
-  elseif g then ctl[1]=true ctl[4]=true
-  elseif not dshot and p.vy>-.45 then
-   ctl[1]=true ctl[5]=true dshot=true
-  elseif p.x<113 then ctl[1]=true
-  else ctl[0]=true end
-
- elseif dphase==7 then
-  ctl[1]=true
- end
-end
-
-function read_inputs()
- if demo and raw_button() then
-  demo=false
-  score=0
-  for b in all(berries) do b.got=false end
-  reset_player()
-  for i=0,5 do oldctl[i]=false end
- end
- if demo then
-  demo_inputs()
- else
-  for i=0,5 do ctl[i]=btn(i) end
- end
-end
-
-function pressed(i)
- return ctl[i] and not oldctl[i]
-end
-
-function overlap(x,y,w,h,r)
- return x+w>r.x and x<r.x+r.w and y+h>r.y and y<r.y+r.h
-end
-
-function solid_at(x,y)
- if x<1 or x+p.w>127 then return true end
- for r in all(plats) do
-  if overlap(x,y,p.w,p.h,r) then return true end
+function box_solid(nx,ny)
+ local l=flr(nx/8)
+ local r=flr((nx+5)/8)
+ local u=flr(ny/8)
+ local d=flr((ny+5)/8)
+ for yy=u,d do
+  for xx=l,r do
+   if tile(xx,yy)=="#" then return true end
+  end
  end
  return false
 end
 
-function move_x(a)
- while abs(a)>.001 do
-  local s=mid(-1,a,1)
-  if solid_at(p.x+s,p.y) then
-   p.vx=0
-   p.dash_t=0
-   return
+function move_axis(amount,horizontal)
+ local left=amount
+ while abs(left)>.001 do
+  local step=mid(-1,left,1)
+  local nx=x
+  local ny=y
+  if horizontal then nx+=step else ny+=step end
+  if box_solid(nx,ny) then return true end
+  x=nx y=ny left-=step
+ end
+ return false
+end
+
+function overlap(tx,ty)
+ local px=tx*8
+ local py=ty*8
+ return x<px+8 and x+5>=px and y<py+8 and y+5>=py
+end
+
+function make_entities()
+ berries={}
+ spikes={}
+ goalx=0 goaly=0
+ for ty=0,15 do
+  for tx=0,15 do
+   local c=tile(tx,ty)
+   if c=="b" then add(berries,{x=tx,y=ty,got=false}) end
+   if c=="^" then add(spikes,{x=tx,y=ty}) end
+   if c=="g" then goalx=tx goaly=ty end
   end
-  p.x+=s
-  a-=s
  end
 end
 
-function move_y(a)
- while abs(a)>.001 do
-  local s=mid(-1,a,1)
-  if solid_at(p.x,p.y+s) then
-   p.vy=0
-   p.dash_t=0
-   return
-  end
-  p.y+=s
-  a-=s
+function respawn(count_death)
+ if count_death then deaths+=1 end
+ if count_death and demo then
+  phase=0 phase_time=0 score=0
+  for b in all(berries) do b.got=false end
+ end
+ x=9 y=114
+ vx=0 vy=0
+ grounded=false
+ can_dash=true
+ hitstop=0 dash_left=0
+ dash_vx=0 dash_vy=0
+ dashing=false facing=1
+ dead=0
+ was_grounded=false
+end
+
+function kill()
+ if dead==0 and not win then
+  dead=18
+  vx=0 vy=0
  end
 end
 
-function start_dash()
- local dx=(ctl[1] and 1 or 0)-(ctl[0] and 1 or 0)
- local dy=(ctl[3] and 1 or 0)-(ctl[2] and 1 or 0)
- if dx==0 and dy==0 then dx=p.face end
- if dx!=0 and dy!=0 then dx*=.7071 dy*=.7071 end
- p.vx=dx*4.5
- p.vy=dy*4.5
- p.dash_t=8
- p.freeze=2
- p.can_dash=false
- for i=1,4 do
-  add(trail,{x=p.x+rnd(4),y=p.y+rnd(6),t=7-i})
- end
-end
-
-function hazard_check()
- if p.vy>=0 then
+function touch_entities(effective_vy)
+ if y>128 then kill() return end
+ local falling=(effective_vy==nil and vy or effective_vy)>=0
+ if falling then
   for s in all(spikes) do
-   if overlap(p.x+1,p.y+1,p.w-2,p.h-1,s) then
-    respawn()
-    return true
-   end
+   if overlap(s.x,s.y) then kill() return end
   end
  end
- if p.y>128 then respawn() return true end
- return false
-end
-
-function object_check()
  for b in all(berries) do
-  if not b.got and overlap(p.x,p.y,p.w,p.h,{x=b.x,y=b.y,w=6,h=7}) then
+  if not b.got and overlap(b.x,b.y) then
    b.got=true
    score+=1
-   for i=1,7 do add(dust,{x=b.x+3,y=b.y+3,vx=rnd(2)-1,vy=rnd(2)-1,t=14,c=8}) end
   end
  end
- local goal={x=116,y=39,w=9,h=13}
- if grounded() and overlap(p.x,p.y,p.w,p.h,goal) then
-  won=true
-  clear_t=0
-  p.vx=0 p.vy=0
+ if overlap(goalx,goaly) then
+  win=true
+  win_timer=0
+  vx=0 vy=0
+  dashing=false
  end
 end
 
-function update_fx()
- for s in all(snow) do
-  s.y+=s.s
-  s.x+=.08
-  if s.y>127 then s.y=-2 s.x=rnd(128) end
-  if s.x>127 then s.x=0 end
+function physical_pressed()
+ for i=0,5 do
+  if btn(i) then return true end
  end
- for q in all(trail) do
-  q.t-=1
-  if q.t<=0 then del(trail,q) end
+ return false
+end
+
+function platform_row()
+ if not grounded then return -1 end
+ return flr((y+6)/8)
+end
+
+function clear_demo_input()
+ il=false ir=false iu=false id=false
+ ij=false ix=false
+end
+
+function demo_control()
+ clear_demo_input()
+ local p=platform_row()
+ phase_time+=1
+
+ -- make the safe introductory jump onto the first shelf
+ if phase==0 then
+  ir=true
+  if p==15 and x>=40 then ij=true phase=2 phase_time=0 end
+
+ -- land on the right shelf, then reverse to the higher left shelf
+ elseif phase==2 then
+  ir=true
+  if p==14 then phase=3 phase_time=0 end
+ elseif phase==3 then
+  il=true
+  if p==14 and x<=44 then ij=true phase=4 phase_time=0 end
+ elseif phase==4 then
+  il=true
+  if p==13 then
+   il=false ir=true ij=true
+   phase=6 phase_time=0
+  end
+
+ -- reverse again and collect the lower detour berry
+ elseif phase==5 then
+  ir=true
+  if p==13 and x>=33 then ij=true phase=6 phase_time=0 end
+ elseif phase==6 then
+  ir=true
+  if p==12 then phase=7 phase_time=0 end
+
+ -- climb up-left to the gap takeoff
+ elseif phase==7 then
+  il=true
+  if p==12 and x<=44 then ij=true phase=8 phase_time=0 end
+ elseif phase==8 then
+  il=true iu=true ix=true
+  phase=9 phase_time=0
+ elseif phase==9 then
+  il=true
+  if p==10 and x<40 then phase=10 phase_time=0 end
+
+ -- run, jump, and spend a horizontal dash over four empty columns
+ elseif phase==10 then
+  ir=true
+  if p==10 and x>=25 then ij=true phase=11 phase_time=0 end
+ elseif phase==11 then
+  ir=true
+  if phase_time>=4 then
+   ix=true phase=12 phase_time=0
+  end
+ elseif phase==12 then
+  ir=true
+  if p==10 and x>55 then phase=13 phase_time=0 end
+
+ -- one last rising jump reaches the real goal flag
+ elseif phase==13 then
+  ir=true
+  if p==10 and x>=73 then ij=true phase=14 phase_time=0 end
+ elseif phase==14 then
+  ir=true
+  if p==10 and x>=89 then ij=true phase=15 phase_time=0 end
+ elseif phase==15 then
+  ir=true
  end
- for q in all(dust) do
-  q.x+=q.vx q.y+=q.vy q.vy+=.08 q.t-=1
-  if q.t<=0 then del(dust,q) end
+end
+
+function read_controls()
+ if demo then
+  if dead==0 then demo_control() else clear_demo_input() end
+  return
  end
+ il=btn(0) ir=btn(1)
+ iu=btn(2) id=btn(3)
+ ij=btnp(4) ix=btnp(5)
+end
+
+function age_trails()
+ for i=#trail,1,-1 do
+  trail[i].life-=1
+  if trail[i].life<=0 then deli(trail,i) end
+ end
+end
+
+function player_step()
+ if hitstop>0 then
+  hitstop-=1
+  dashing=dash_left>0
+  return
+ end
+
+ if dash_left>0 then
+  add(trail,{x=x,y=y,life=4})
+  move_axis(dash_vx,true)
+  move_axis(dash_vy,false)
+  dash_left-=1
+  dashing=dash_left>0
+  if dash_left==0 then
+   vx=mid(-max_run,dash_vx,max_run)
+   if dash_vy<=0 then vy=0 else vy=mid(0,dash_vy,max_fall) end
+  end
+  grounded=box_solid(x,y+1)
+  if grounded then can_dash=true end
+  touch_entities(dash_vy)
+  return
+ end
+
+ local dx=(ir and 1 or 0)-(il and 1 or 0)
+ local dy=(id and 1 or 0)-(iu and 1 or 0)
+ if ix and can_dash then
+  if dx==0 and dy==0 then dx=facing end
+  dash_vx=dx*dash_speed
+  dash_vy=dy*dash_speed
+  if dx!=0 and dy!=0 then
+   dash_vx*=dash_diag
+   dash_vy*=dash_diag
+  end
+  can_dash=false
+  hitstop=1
+  dash_left=4
+  vx=0 vy=0
+  dashing=true
+  return
+ end
+
+ if dx!=0 then
+  facing=dx
+  vx=approach(vx,max_run*dx,accel)
+ else
+  vx=approach(vx,0,decel)
+ end
+ vy=approach(vy,max_fall,gravity)
+ if ij and grounded then vy=jump_v end
+
+ if move_axis(vx,true) then vx=0 end
+ if move_axis(vy,false) then vy=0 end
+ grounded=box_solid(x,y+1)
+ if grounded then can_dash=true end
+ dashing=false
+ touch_entities()
+end
+
+function _init()
+ extcmd("set_filename","gpt56-sol.gif")
+ extcmd("rec_frames")
+ make_entities()
+ score=0 deaths=0
+ win=false win_timer=0
+ video_saved=false gif_ok=true
+ demo=true demo_updates=0
+ phase=0 phase_time=0
+ landings=0
+ trail={}
+ t=0
+ respawn(false)
 end
 
 function _update()
- if won then
-  if demo and not gif_saved then
-   clear_t+=1
-   if clear_t>=45 then
+ -- physical input can cancel even during dash hitstop or the clear hold
+ if demo and physical_pressed() then
+  demo=false gif_ok=false win=false
+  score=0 deaths=0 landings=0 trail={}
+  for b in all(berries) do b.got=false end
+  respawn(false)
+ end
+ if demo then
+  demo_updates+=1
+  if demo_updates>2700 and not win then
+   demo=false gif_ok=false
+  end
+ end
+
+ if win then
+  t+=1 age_trails()
+  if demo and gif_ok and not video_saved then
+   win_timer+=1
+   if win_timer==45 then
+    video_saved=true
     extcmd("video",4,1)
-    gif_saved=true
    end
   end
   return
  end
 
- read_inputs()
- update_fx()
-
- if p.freeze>0 then
-  p.freeze-=1
- else
-  if pressed(5) and p.can_dash then start_dash() end
-
-  if p.dash_t>0 then
-   add(trail,{x=p.x,y=p.y,t=5})
-   move_x(p.vx)
-   move_y(p.vy)
-   p.dash_t-=1
-  else
-   local m=(ctl[1] and 1 or 0)-(ctl[0] and 1 or 0)
-   if m!=0 then
-    p.vx=mid(-1.5,p.vx+m*.3,1.5)
-    p.face=m
-   else
-    p.vx=approach(p.vx,0,.22)
-   end
-   if pressed(4) and grounded() then
-    p.vy=-3.4
-    for i=1,3 do add(dust,{x=p.x+3,y=p.y+7,vx=rnd(1)-.5,vy=-rnd(1),t=9,c=7}) end
-   end
-   p.vy=min(2.5,p.vy+.18)
-   move_x(p.vx)
-   move_y(p.vy)
-  end
+ if dead>0 then
+  t+=1 age_trails()
+  dead-=1
+  if dead==0 then respawn(true) end
+  return
  end
 
- if grounded() and p.vy>=0 then p.can_dash=true end
- if not hazard_check() then object_check() end
- for i=0,5 do oldctl[i]=ctl[i] end
+ -- the update after the dash press is the second frozen update
+ if hitstop>0 then
+  hitstop-=1
+  dashing=dash_left>0
+  return
+ end
+
+ read_controls()
+
+ was_grounded=grounded
+ player_step()
+ -- the dash-press update is the first frozen update
+ if hitstop==0 then
+  t+=1
+  age_trails()
+ end
+ if grounded and not was_grounded then landings+=1 end
 end
 
-function approach(v,t,a)
- if v<t then return min(v+a,t) end
- return max(v-a,t)
-end
-
-function draw_mountain()
+function draw_background()
  cls(0)
- -- cold blue cave openings and layered rock, echoing the reference scene
- rectfill(0,14,127,127,1)
- rectfill(0,77,127,127,0)
- palt(0,false)
- color(5)
- for x=0,127,16 do
-  local h=18+((x/16)%3)*7
-  uptri(x,72,13,h,5)
- end
- rectfill(0,0,127,12,5)
- for x=0,127,16 do
-  rectfill(x,10,x+8,14+(x%5),5)
- end
- rectfill(5,20,34,23,13)
- rectfill(91,25,119,28,13)
- rectfill(14,36,28,39,1)
- rectfill(70,34,84,37,1)
-end
 
-function uptri(x,y,w,h,c)
- for dy=0,h do
-  local inset=flr(dy*w/(h*2))
-  line(x+inset,y-dy,x+w-inset,y-dy,c)
- end
-end
+ -- distant blue cavern lobes leave a large black central void
+ rectfill(0,8,6,127,1)
+ rectfill(0,70,22,127,1)
+ rectfill(7,92,42,127,1)
+ rectfill(121,8,127,127,1)
+ rectfill(104,48,127,127,1)
+ rectfill(82,98,127,127,1)
+ rectfill(18,111,58,127,2)
+ rectfill(70,112,108,127,2)
 
-function draw_platform(r)
- rectfill(r.x,r.y,r.x+r.w-1,r.y+r.h-1,5)
- rectfill(r.x,r.y,r.x+r.w-1,r.y+1,7)
- for x=r.x+2,r.x+r.w-2,6 do
-  pset(x,r.y+2,6)
- end
- if r.y<110 then
-  line(r.x+2,r.y+r.h,r.x+r.w-4,r.y+r.h,1)
+ -- irregular gray-brown framing and cyan ice seams
+ rectfill(0,9,3,62,5)
+ rectfill(0,82,10,101,5)
+ rectfill(124,9,127,72,5)
+ rectfill(118,18,127,36,5)
+ line(4,25,4,57,13)
+ line(122,43,122,68,12)
+ rectfill(1,9,5,10,7)
+ rectfill(122,9,126,10,7)
+
+ -- sparse deterministic snow behind the playfield
+ for i=1,10 do
+  local sx=(i*37)%118+5
+  local sy=(i*53+flr(t/6))%111+10
+  pset(sx,sy,i%3==0 and 7 or 6)
  end
 end
 
-function draw_spikes(s)
- for x=s.x,s.x+s.w-1,4 do
-  uptri(x,s.y+s.h-1,3,s.h-1,7)
-  pset(x+2,s.y+1,6)
+function draw_rock(tx,ty)
+ local px=tx*8
+ local py=ty*8
+ rectfill(px,py,px+7,py+7,5)
+ if tile(tx+1,ty)!="#" then line(px+7,py+2,px+7,py+7,1) end
+ line(px,py+7,px+7,py+7,1)
+ pset(px+2+(ty%3),py+4,13)
+ if (tx+ty)%5==0 then pset(px+6,py+5,12) end
+ if tile(tx,ty-1)!="#" then
+  line(px,py,px+7,py,7)
+  line(px+1,py+1,px+3,py+1,7)
+  pset(px+6,py+1,6)
+ end
+end
+
+function draw_spike(s)
+ local px=s.x*8
+ local py=s.y*8
+ for i=0,1 do
+  local q=px+i*4
+  pset(q+2,py+1,7)
+  line(q+1,py+3,q+2,py+2,7)
+  line(q+1,py+4,q+3,py+4,6)
+  line(q,py+6,q+3,py+6,6)
+  line(q,py+7,q+3,py+7,5)
  end
 end
 
 function draw_berry(b)
  if b.got then return end
- local x=b.x local y=b.y
- pset(x+2,y,3) pset(x+4,y,3)
- rectfill(x+1,y+2,x+5,y+5,8)
- pset(x,y+3,8) pset(x+3,y+6,8)
- pset(x+2,y+3,10) pset(x+4,y+4,10)
+ local px=b.x*8
+ local py=b.y*8+flr(sin((t+b.x*9)/25))
+ pset(px+4,py,11)
+ line(px+2,py+1,px+4,py+2,11)
+ pset(px+5,py+1,3)
+ line(px+1,py+3,px+6,py+3,8)
+ rectfill(px+1,py+4,px+6,py+5,8)
+ line(px+2,py+6,px+5,py+6,14)
+ line(px+3,py+7,px+4,py+7,8)
+ pset(px+2,py+3,7)
 end
 
-function draw_flag()
- line(119,40,119,51,3)
- rectfill(120,40,125,46,14)
- rectfill(120,40,123,42,8)
- pset(121,43,15)
+function draw_goal()
+ local px=goalx*8
+ local py=goaly*8
+ line(px+1,py,px+1,py+8,6)
+ pset(px+1,py,7)
+ line(px+2,py+1,px+7,py+1,8)
+ line(px+2,py+2,px+6,py+2,14)
+ line(px+2,py+3,px+5,py+3,8)
+ line(px+2,py+4,px+4,py+4,8)
 end
 
-function draw_player()
- local x=flr(p.x) local y=flr(p.y)
- local hc=p.can_dash and 8 or 12
- if p.dash_t>0 then hc=7 end
- -- six-pixel madeline silhouette: bright hair, face, pack and teal coat
- rectfill(x+1,y,x+4,y+2,hc)
- pset(x,y+1,hc) pset(x+5,y+2,hc)
- rectfill(x+2,y+2,x+4,y+4,15)
- pset(x+4,y+3,0)
- rectfill(x+1,y+4,x+4,y+6,3)
- pset(x,y+4,hc)
- pset(x+1,y+7,6) pset(x+4,y+7,6)
+function draw_player_at(px,py,ghost)
+ px=flr(px)-1 py=flr(py)-1
+ if ghost then
+  rectfill(px+1,py+2,px+5,py+6,7)
+  return
+ end
+ local hair=can_dash and 8 or 12
+ pset(px+(facing<0 and 6 or 0),py+2,hair)
+ line(px+1,py+1,px+5,py+1,hair)
+ rectfill(px+1,py+2,px+5,py+3,hair)
+ rectfill(px+2,py+2,px+5,py+4,15)
+ pset(px+(facing>0 and 5 or 2),py+3,0)
+ rectfill(px+2,py+5,px+5,py+7,2)
+ pset(px+1,py+7,1)
+ pset(px+6,py+7,1)
+ if can_dash then pset(px+2,py+1,14) end
 end
 
-function draw_ui()
- rectfill(39,0,89,8,0)
- print(title,42,2,7)
- print("x"..score,3,3,7)
- draw_berry({x=1,y=1,got=false})
- if demo and not won then print("demo",105,3,6) end
+function draw_hud()
+ print("GPT-5.6 Sol",43,3,0)
+ print("GPT-5.6 Sol",42,2,7)
+ draw_berry({x=0,y=1,got=false})
+ print("x"..score,9,11,7)
+ if demo and not win then print("demo",108,11,6) end
 end
 
 function _draw()
- draw_mountain()
- for s in all(snow) do pset(flr(s.x),flr(s.y),s.c) end
- for r in all(plats) do draw_platform(r) end
- for s in all(spikes) do draw_spikes(s) end
- for b in all(berries) do draw_berry(b) end
- draw_flag()
- for q in all(trail) do
-  if q.t%2==0 then rectfill(q.x,q.y,q.x+2,q.y+2,7) else pset(q.x,q.y,7) end
+ draw_background()
+
+ for ty=0,15 do
+  for tx=0,15 do
+   if tile(tx,ty)=="#" then draw_rock(tx,ty) end
+  end
  end
- for q in all(dust) do pset(q.x,q.y,q.c) end
- draw_player()
- draw_ui()
- if won then
-  rectfill(31,77,96,100,0)
-  rect(31,77,96,100,7)
-  print("clear!",51,82,7)
-  print("berries "..score,45,91,8)
+ for s in all(spikes) do draw_spike(s) end
+ for b in all(berries) do draw_berry(b) end
+ draw_goal()
+
+ for q in all(trail) do draw_player_at(q.x,q.y,true) end
+ if dead==0 or dead%3==0 then draw_player_at(x,y,false) end
+ draw_hud()
+
+ if win then
+  rectfill(35,48,92,67,0)
+  rect(35,48,92,67,7)
+  print("CLEAR!",52,52,7)
+  print("berry "..score.."/2",46,60,14)
  end
 end

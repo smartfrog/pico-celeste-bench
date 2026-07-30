@@ -65,6 +65,7 @@ hitstop=0
 dash_dx=0
 dash_dy=0
 facing=1
+anim=0
 score=0
 win=false
 deaths=0
@@ -195,6 +196,7 @@ function box_hit(c,r)
 end
 
 function _update()
+ anim+=1
  if win then
   win_timer-=1
   if win_timer==0 and not gif_saved and demo then
@@ -510,16 +512,50 @@ function draw_trail()
  end
 end
 
+i0={"..HHHH..",".HHHHH..","HHSSSH..","HHSSEH..",".gGGg...",".GGGG...",".S..S...",".B..B..."}
+i1={"..HHHH..",".HHHHH..","HHSSSH..","HHSSSH..",".gGGg...",".GGGG...",".S..S...",".B..B..."}
+r0={"..HHHH..",".HHHHH..","HHSSSH..","HHSSEH..",".gGGg...",".GGGG...",".S...S..",".B...B.."}
+r1={"..HHHH..",".HHHHH..","HHSSSH..","HHSSEH..",".gGGg...",".GGGG...","..S.S...","..B.B..."}
+j0={"..HHHH..",".HHHHH..","HHSSSH..","HHSSEH..",".gGGg...",".GGGG...",".SS.SS..","..B.B..."}
+f0={"..HHHH..",".HHHHH..","HHSSSH..","HHSSEH..",".gGGg...",".GGGG...","..S.S...","..S.S..."}
+d0={"........","HHHHH...","HHHSSH..","HHHSEH..","..gGGG..","...gG...","..SS....",".B.B...."}
+idle_f={i0,i1}
+run_f={r0,r1}
+jump_f={j0}
+fall_f={f0}
+dash_f={d0}
+
+function pix(map,ox,oy,hc,flip)
+ for r=1,8 do
+  local row=map[r]
+  for c=0,7 do
+   local idx=flip and 8-c or c+1
+   local ch=sub(row,idx,idx)
+   if ch~="." then
+    local col=ch=="H" and hc or ch=="S" and 15 or ch=="E" and 0 or ch=="G" and 11 or ch=="g" and 3 or ch=="B" and 4 or 7
+    pset(ox+c,oy+r-1,col)
+   end
+  end
+ end
+end
+
 function draw_player()
- local px=flr(player_x) py=flr(player_y)
- local hc=can_dash and 8 or 1
- rectfill(px,py,px+5,py+1,hc)
- rectfill(px-1,py+1,px+6,py+1,hc)
- rectfill(px+1,py+2,px+4,py+3,15)
- pset(px+2,py+2,0)
- pset(px+3,py+2,0)
- rectfill(px+1,py+4,px+4,py+5,3)
- if facing==1 then pset(px+4,py+3,15) else pset(px+1,py+3,15) end
+ local hc=(can_dash or dashing) and 8 or 12
+ local pose,fi
+ if dashing then
+  pose=dash_f fi=0
+ elseif not grounded then
+  if player_vy<0 then pose=jump_f else pose=fall_f end
+  fi=0
+ elseif abs(player_vx)>0.1 then
+  pose=run_f fi=flr(anim/4)%2
+ else
+  pose=idle_f fi=flr(anim/24)%2
+ end
+ local ox=flr(player_x)-1
+ local oy=flr(player_y)-1
+ if pose==run_f then ox+=facing end
+ pix(pose[fi+1],ox,oy,hc,facing<0)
 end
 
 function draw_parts()

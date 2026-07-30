@@ -198,12 +198,16 @@ Treat the references as a production target. Before autoplay, build:
 - a quiet top 8-pixel title placement zone holding the supplied display name with a
   contrasting shadow; cavern framing continues behind it rather than a solid HUD bar
 - dark navy/black cavern interior, gray-brown rock, pale snow caps, occasional cyan ice, and
-  bright red/pink focal sprites with green stems and white highlights
+  bright red/pink focal sprites with green stems and white highlights; target roughly 25% cyan
+  sky or ice, 25% gray-brown rock, 20% black negative space, 15% pale snow, and 10% deep navy,
+  with no single colour covering more than 40% of the frame
 - sparse rock texture, irregular silhouette edges, and clear foreground/background contrast
 
 Recreate recognizable 8x8 pixel-art versions of the player, strawberry, spikes, snow edge,
-and one rock tile family from `assets/sprites.png`. Design an original readable goal flag in
-the same palette and treatment. Sprites may use `__gfx__` or carefully drawn pixel primitives,
+and one rock tile family from `assets/sprites.png`. Within its 8x8 cell the player carries
+three distinct colour roles — hair, skin, and body — plus eyes, so it reads as a character
+rather than a blob; the reference player is red hair over a pale face over a green torso.
+Design an original readable goal flag in the same palette and treatment. Sprites may use `__gfx__` or carefully drawn pixel primitives,
 with deliberate silhouettes and highlights rather than plain squares. Keep solids, hazards,
 collectibles, player, and goal distinguishable at native scale, and add only a few ambient
 snow or dust particles.
