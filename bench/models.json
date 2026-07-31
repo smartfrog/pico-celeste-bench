@@ -9,8 +9,9 @@
   "prompt_file": "prompts/celeste_like.md",
   "models": [
     { "model": "voban/deepseek-v4-pro", "variant": "max", "out": "deepseekv4pro", "cart_name": "DeepSeek V4 Pro" },
+    { "model": "voban/deepseek-v4-flash", "variant": "max", "out": "deepseekv4flash", "cart_name": "DeepSeek V4 Flash" },
     { "model": "openai/gpt-5.6-sol", "variant": "xhigh", "out": "gpt56-sol", "cart_name": "GPT-5.6 Sol" },
-     { "model": "openai/gpt-5.6-terra", "variant": "xhigh", "out": "gpt56-terra", "cart_name": "GPT-5.6 Terra" },
+    { "model": "openai/gpt-5.6-terra", "variant": "xhigh", "out": "gpt56-terra", "cart_name": "GPT-5.6 Terra" },
     { "model": "opencode/claude-fable-5", "variant": "max", "out": "fable5", "cart_name": "Fable 5" },
     { "model": "voban/qwen3.8-max-preview", "out": "qwen38", "cart_name": "Qwen 3.8 Max" },
     { "model": "opencode/claude-opus-5", "variant": "max", "out": "opus5", "cart_name": "Opus 5" },
